@@ -54,6 +54,19 @@ class RenderWatershed(_RenderTask):
         self._render(images, RENDER_WATERSHED_OUTPUT)
 
 
+RENDER_REGIONS_OUTPUT = scaffold.registerParameter("renderRegionsOutput", "regions.avi",
+"""The file path to render the output video of RenderRegions to.""")
+
+class RenderRegions(_RenderTask):
+
+    name = "Render Regions"
+    dependencies = [pr.MergeStatisticalRegions]
+
+    def run(self):
+        images = self._import(pr.MergeStatisticalRegions, "masks")
+        self._render(map(im.binaryToGray, images), RENDER_REGIONS_OUTPUT)
+
+
 RENDER_ELLIPSES_OUTPUT = scaffold.registerParameter("renderEllipsesOutput", "ellipses.avi",
 """The file path to render the output video of RenderEllipses to.""")
 RENDER_ELLIPSES_COLOR = scaffold.registerParameter("renderEllipsesColor", (0, 0, 255),

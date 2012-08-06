@@ -9,6 +9,7 @@ import math
 import tables as tb
 import images as im
 import scaffold
+import _regions
 from scipy import stats
 from trackpy import tracking
 
@@ -164,129 +165,33 @@ class Watershed(scaffold.Task):
     def export(self):
         return dict(regions=self._regions, isolated=self._isolated)
 
-REGION_SEGMENTATION = scaffold.registerParameter("regionSegmentation", 10.0,
+REGION_SEGMENTATION = scaffold.registerParameter("regionSegmentation", 120.0,
 """Insert description here.""")
-
-NUM_DIFF_REGIONS = scaffold.registerParameter("numDiffRegions", 256,
-"""The number of different intensity values/regions.""")
+REGION_THRESHOLD = scaffold.registerParameter("regionThreshold", 5,
+"""The minimum threshold applied to the region-average image.""")
 
 class MergeStatisticalRegions(scaffold.Task):
 
     name = "Merge Statistical Regions"
-    dependencies = [im.ParseConfig, RemoveBackground]
+    dependencies = [RemoveBackground]
 
     def run(self):
-        info = self._import(im.ParseConfig, "info")
         images = self._import(RemoveBackground, "images")
         segParam = self._param(REGION_SEGMENTATION)
-        numDiffRegions = self._param(NUM_DIFF_REGIONS)
+        threshold = self._param(REGION_THRESHOLD)
 
-        imageShape = info.imageShape
-        numRows, numCols = imageShape
-        numPixels = info.imageShape.prod()
-        delta = 1.0/(6*numPixels)
-        factor = numDiffRegions**2 / (2*segParam)
-        logDelta = 2.0*math.log(6*numPixels)
+        self._masks = []
+        self._groupedByRegions = []
 
-        averages = []
-        groupedByRegions = []
-
-        for image in images:
-            average = np.float32(image.flatten())
-            count = np.ones(numPixels, dtype=np.uint8)
-            regionIndex = np.arange(numPixels, dtype=np.int32)
-
-            nextNeighbor = np.zeros(2*numPixels, dtype=np.int32)
-            neighborBucket = -1*np.ones(numDiffRegions, dtype=np.int32)
-
-            vertifcalDiff = np.diff(image, axis=0).abs()
-            horizontalDiff = np.diff(image, axis=1).abs()
-
-            def addNeighborPair(index, diff):
-                nextNeighbor[index] = neighborBucket[diff]
-                neighborBucket[diff] = index
-
-            for row in reversed(range(numRows)):
-                for col in reversed(range(numCols)):
-                    baseIndex = 2*(row*numCols + col)
-
-                    # vertical diff takes off 1 row
-                    if row < numRows - 1:
-                        addNeighborPair(baseIndex, vertifcalDiff[row, col])
-
-                    # horizontal diff takes off 1 col
-                    if col < numCols - 1:
-                        addNeighborPair(baseIndex + 1, vertifcalDiff[row, col])
-
-            def getRegionIndex(index):
-                index = regionIndex[index]
-                while index < 0:
-                    index = regionIndex[-1 - index]
-                return index
-
-            def getCountFactor(region):
-                c = count[region]
-                return (math.log(1 + c)*min(numDiffRegions, c) + logDelta)/c
-
-            def predicate(r1, r2):
-                diff = average[r1] - average[r2]
-                return diff**2 < factor*(getCountFactor(r1) + 
-                                         getCountFactor(r2))
-
-            def mergeRegions(r1, r2):
-                if r1 == r2: return
-
-                c1, c2 = count[r1], count[r2]
-                mergedCount = c1 + c2
-                mergedAverage = (average[r1]*c1 + average[r2]*c2)/mergedCount
-
-                # merge larger indices into smaller indices (stable order)
-                r1, r2 = sorted((r1, r2))
-                average[r1] = mergedAverage
-                count[r1] = mergedCount
-                regionIndex[r1] = -1 - r2
-
-            for neighborIndex in neighborBucket:
-                while neighborIndex >= 0:
-                    index1 = neighborIndex//2
-                    # num & 1 evaluates to True if num is odd
-                    index2 = index1 + (width if neighborIndex & 1 else 1)
-
-                    region1 = getRegionIndex(index1)
-                    region2 = getRegionIndex(index2)
-
-                    if predicate(region1, region2):
-                        mergeRegions(region1, region2)
-
-                    neighborIndex = nextNeighbor[neighborIndex]
-
-            # By construction, a negative regionIndex will always point
-            # to a smaller regionIndex.
-            # So we can get away by iterating from small to large and
-            # replacing the positive ones with running numbers, and the
-            # negative ones by the ones they are pointing to (that are
-            # now guaranteed to contain a non-negative index).
-            
-            numRegions = 0
-            for i, region in enumerate(regionIndex):
-                if region < 0:
-                    regionIndex[i] = regionIndex[-1 - region]
-                else:
-                    regionIndex[i] = numRegions
-                    numRegions += 1
-
-            # flood fill average
-            for i in range(len(average)):
-                average[i] = average[getRegionIndex(i)]
-            averages.append(average)
-
-            groupedByRegions.append(regionIndex.reshape(imageShape))
-
-        self._averages = averages
-        self._groupedByRegions = groupedByRegions
+        for image in images[:24]:
+            numRegions, average, regions = \
+                    _regions.mergeStatisticalRegions(image, segParam)
+            self._masks.append(average > threshold)
+            self._groupedByRegions.append(regions)
+            print numRegions
 
     def export(self):
-        return dict(averages=self._averages, 
+        return dict(masks=self._masks, 
                     groupedByRegions=self._groupedByRegions)
 
 
@@ -384,7 +289,7 @@ class FindEllipses(scaffold.Task):
     """
 
     name = "Find Ellipses"
-    dependencies = [im.ParseConfig, Watershed]#, ComputeForegroundMasks, IdentifyParticles]
+    dependencies = [im.ParseConfig, MergeStatisticalRegions]
 
     def isComplete(self):
         return self.context.hasNode("ellipses")
@@ -395,7 +300,7 @@ class FindEllipses(scaffold.Task):
         expectedPerFrame = self._param(EXPECTED_ELLIPSES_PER_FRAME)
         #frames = self._import(IdentifyParticles, "images")
         #frames = self._import(ComputeForegroundMasks, "masks")
-        frames = self._import(Watershed, "isolated")
+        frames = self._import(MergeStatisticalRegions, "masks")
         
         table = self.context.createTable("ellipses", EllipseTable,
                                          expectedrows=expectedPerFrame*len(frames))
