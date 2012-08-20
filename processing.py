@@ -165,9 +165,9 @@ class Watershed(scaffold.Task):
     def export(self):
         return dict(regions=self._regions, isolated=self._isolated)
 
-REGION_SEGMENTATION = scaffold.registerParameter("regionSegmentation", 120.0,
+REGION_SEGMENTATION = scaffold.registerParameter("regionSegmentation", 200.0,
 """Insert description here.""")
-REGION_THRESHOLD = scaffold.registerParameter("regionThreshold", 5,
+REGION_THRESHOLD = scaffold.registerParameter("regionThreshold", 16,
 """The minimum threshold applied to the region-average image.""")
 
 class MergeStatisticalRegions(scaffold.Task):
