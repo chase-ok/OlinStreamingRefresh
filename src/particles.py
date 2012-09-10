@@ -15,7 +15,7 @@ from trackpy import tracking
 
 from matplotlib import pyplot as plt
 
-ELLIPSE_MIN_AREA = scaffold.registerParameter("ellipseMinArea", 0.5,
+ELLIPSE_MIN_AREA = scaffold.registerParameter("ellipseMinArea", 4.0,
 """The minimum area required to identify an ellipse.""")
 ELLIPSE_MAX_AREA = scaffold.registerParameter("ellipseMaxArea", 200.0,
 """The maximum area required to identify an ellipse.""")
@@ -23,31 +23,23 @@ EXPECTED_ELLIPSES_PER_FRAME = scaffold.registerParameter("expectedEllipsesPerFra
 """The mean number of ellipses we expect to find. It's used to optimize memory
 allocation.""")
 
-class FindParticlesViaRegions(scaffold.Task):
-    """
-    Identifies ellipses in a binary image and dumps them into an ellipses
-    table in the HDF5 file.
-    """
+ELLIPSE_TABLE_PATH = "ellipses"
 
-    name = "Find Ellipses"
-    dependencies = [im.ParseConfig, im.MergeStatisticalRegions]
+class ParticleFinder(scaffold.Task):
+    """Base class for all of the different ways to find particles."""
 
-    def isComplete(self):
-        return self.context.hasNode("ellipses")
-
-    def run(self):
+    def _findEllipsesViaContours(self, masks):
         minArea = self._param(ELLIPSE_MIN_AREA)
         maxArea = self._param(ELLIPSE_MAX_AREA)
         expectedPerFrame = self._param(EXPECTED_ELLIPSES_PER_FRAME)
-        frames = self._import(im.MergeStatisticalRegions, "masks")
         
-        table = self.context.createTable("ellipses", EllipseTable,
-                                         expectedrows=expectedPerFrame*len(frames))
+        table = self.context.createTable(ELLIPSE_TABLE_PATH, EllipseTable,
+                                         expectedrows=expectedPerFrame*len(masks))
         ellipse = table.row # shortcut
 
         # use OpenCV to identify contours -> ellipses
-        for frameNum, frame in enumerate(frames):
-            contours, _ = cv2.findContours(frame.astype(np.uint8), 
+        for frameNum, mask in enumerate(masks):
+            contours, _ = cv2.findContours(mask.astype(np.uint8), 
                                            cv2.RETR_LIST, 
                                            cv2.CHAIN_APPROX_SIMPLE)
             for contour in contours:
@@ -64,23 +56,26 @@ class FindParticlesViaRegions(scaffold.Task):
                 ellipse['axes'] = estimateEllipseAxesFromContour(contour)
                 ellipse.append()
 
-                # position, axes, angle = cv2.fitEllipse(contour)
-
-                # # TODO: are these half axes or full?
-                # area = math.pi/4*np.prod(axes)
-                # if area < minArea or area > maxArea: continue
-
-                # ellipse['frame'] = frameNum
-                # ellipse['area'] = area
-                # ellipse['position'] = position
-                # ellipse['angle'] = _TO_RADIANS*angle
-                # ellipse['axes'] = axes
-                # ellipse.append()
-
         table.flush()
 
+class FindParticlesViaRegions(ParticleFinder):
+    """
+    Identifies ellipses in a binary image and dumps them into an ellipses
+    table in the HDF5 file.
+    """
+
+    name = "Find Ellipses"
+    dependencies = [im.ParseConfig, im.MergeStatisticalRegions]
+
+    def isComplete(self):
+        return self.context.hasNode(ELLIPSE_TABLE_PATH)
+
+    def run(self):
+        masks = self._import(im.MergeStatisticalRegions, "masks")
+        self._findEllipsesViaContours(masks)
+
     def export(self):
-        return dict(ellipses=self.context.node("ellipses"))
+        return dict(ellipses=self.context.node(ELLIPSE_TABLE_PATH))
 
 
 DILATION_RADIUS = scaffold.registerParameter("dilationRadius", 3,
@@ -92,13 +87,13 @@ BLUR_SIGMA = scaffold.registerParameter("blurSigma", 2.0,
 EXP_THRESHOLD = scaffold.registerParameter("expThreshold", 0.0001,
 """Threshold for pixel values after final dilation.""")
 
-class FindParticlesViaMasks(scaffold.Task):
+class FindParticlesViaMorph(ParticleFinder):
     """
     Identify particles using a combination of foreground masks and the 
     algorithm described at https://github.com/tacaswell/tracking
     """
 
-    name = "Identify Particles in Images"
+    name = "Find Particles via Morphological Operations"
     dependencies = [im.LoadImages, im.ComputeForegroundMasks]
 
     def run(self):
@@ -106,7 +101,7 @@ class FindParticlesViaMasks(scaffold.Task):
         self._masks = self._import(im.ComputeForegroundMasks, "masks")
         self._imageSize = self._images[0].shape
 
-        self._featureRadius = self._param(FEATURE_RADIUS)
+        self._featureRadius = self._param(im.FEATURE_RADIUS)
         self._dilationRadius = self._param(DILATION_RADIUS)
         self._morphThreshold = self._param(MORPH_THRESHOLD)
         self._blurSigma = self._param(BLUR_SIGMA)
@@ -117,9 +112,11 @@ class FindParticlesViaMasks(scaffold.Task):
 
         self._doMorph()
         self._findLocalMax()
+        self._findEllipsesViaContours(self._maxed)
 
     def export(self):
-        return dict(images=im.ImageSeq(self._maxed))
+        return dict(images=im.ImageSeq(self._maxed),
+                    ellipses=self.context.node(ELLIPSE_TABLE_PATH))
 
     def _doMorph(self):
         """Apply a gaussian blur and then a tophat."""

@@ -93,6 +93,17 @@ class RenderRegions(_RenderTask):
         images = self._import(im.MergeStatisticalRegions, "masks")
         self._render(map(im.binaryToGray, images), RENDER_REGIONS_OUTPUT)
 
+RENDER_MORPHED_IMAGES_OUTPUT = scaffold.registerParameter("renderMorphedImagesOutput", "../videos/morphImages.avi",
+"""The file path to render the output video of RenderMorphImages to.""")
+
+class RenderMorphImages(_RenderTask):
+
+    name = "Render Morph Images"
+    dependencies = [pt.FindParticlesViaMorph]
+
+    def run(self):
+        images = self._import(pt.FindParticlesViaMorph, "images")
+        self._render(images, RENDER_MORPHED_IMAGES_OUTPUT)
 
 RENDER_ELLIPSES_OUTPUT = scaffold.registerParameter("renderEllipsesOutput", "../videos/ellipses.avi",
 """The file path to render the output video of RenderEllipses to.""")
@@ -102,11 +113,11 @@ RENDER_ELLIPSES_COLOR = scaffold.registerParameter("renderEllipsesColor", (0, 0,
 class RenderEllipses(_RenderTask):
 
     name = "Render Ellipses"
-    dependencies = [pt.FindParticlesViaEdges, im.LoadImages]
+    dependencies = [pt.FindParticlesViaMorph, im.LoadImages]
 
     def run(self):
         images = self._import(im.LoadImages, "images")
-        ellipses = self._import(pt.FindParticlesViaEdges, "ellipses")
+        ellipses = self._import(pt.FindParticlesViaMorph, "ellipses")
         color = self._param(RENDER_ELLIPSES_COLOR)
 
         drawn = []

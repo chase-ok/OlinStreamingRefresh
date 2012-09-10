@@ -91,10 +91,10 @@ class LoadImages(scaffold.Task):
         return dict(images=LazyImageSeq(paths))
 
 
-MASK_LOW_THRESH = scaffold.registerParameter("maskLowThresh", -3.0, #-1.3
+MASK_LOW_THRESH = scaffold.registerParameter("maskLowThresh", -10.0, #-1.3
 """The difference from the mean pixel value (in mean differences) below which a 
 pixel will be marked as in the foreground.""")
-MASK_HIGH_THRESH = scaffold.registerParameter("maskHighThresh", 1.0, #1.0
+MASK_HIGH_THRESH = scaffold.registerParameter("maskHighThresh", 3.0, #1.0
 """The difference from the mean pixel value (in mean differences) above which a 
 pixel will be marked as in the foreground.""")
 
@@ -252,21 +252,21 @@ class Watershed(scaffold.Task):
         return dict(regions=self._regions, isolated=self._isolated)
 
 
-REGION_SEGMENTATION = scaffold.registerParameter("regionSegmentation", 200.0,
+REGION_SEGMENTATION = scaffold.registerParameter("regionSegmentation", 150.0,
 """Insert description here.""")
-REGION_THRESHOLD = scaffold.registerParameter("regionThreshold", 16,
+REGION_THRESHOLD = scaffold.registerParameter("regionThreshold", 10,
 """The minimum threshold applied to the region-average image.""")
 
 class MergeStatisticalRegions(scaffold.Task):
 
     name = "Merge Statistical Regions"
-    #dependencies = [RemoveBackground]
-    dependencies = [ComputeForegroundMasks]
+    dependencies = [RemoveBackground]
+    #dependencies = [ComputeForegroundMasks]
 
     def run(self):
-        #images = self._import(RemoveBackground, "images")
-        images = [forceRange(image*(image > 0), 0, 255).astype(np.uint8)
-                  for image in self._import(ComputeForegroundMasks, "diffs")]
+        images = self._import(RemoveBackground, "images")
+        #images = [forceRange(image*(image > 0), 0, 255).astype(np.uint8)
+        #          for image in self._import(ComputeForegroundMasks, "diffs")]
         segParam = self._param(REGION_SEGMENTATION)
         threshold = self._param(REGION_THRESHOLD)
 
@@ -274,6 +274,7 @@ class MergeStatisticalRegions(scaffold.Task):
         self._groupedByRegions = []
 
         for image in images[:24]:
+            image = cv2.GaussianBlur(image, (0, 0), 1.0)
             numRegions, average, regions = \
                     _regions.mergeStatisticalRegions(image, segParam)
             self._masks.append(average > threshold)
