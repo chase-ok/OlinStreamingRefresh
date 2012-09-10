@@ -4,7 +4,7 @@ from distutils.sysconfig import get_python_inc
 from Cython.Distutils import build_ext
 from numpy import get_include as numpy_get_include
 
-ext_modules = [Extension("_regions", ["_regions.pyx"], 
+ext_modules = [Extension("_regions", ["src/_regions.pyx"], 
                          include_dirs = [numpy_get_include()])]
 
 setup(

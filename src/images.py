@@ -10,6 +10,7 @@ from xml.dom import minidom
 import re
 import os
 import numpy as np
+import _regions
 
 
 CONFIG_FILE = scaffold.registerParameter("configFile", "", 
@@ -88,6 +89,201 @@ class LoadImages(scaffold.Task):
     def export(self):
         paths = self._import(ParseConfig, "imagePaths")
         return dict(images=LazyImageSeq(paths))
+
+
+MASK_LOW_THRESH = scaffold.registerParameter("maskLowThresh", -3.0, #-1.3
+"""The difference from the mean pixel value (in mean differences) below which a 
+pixel will be marked as in the foreground.""")
+MASK_HIGH_THRESH = scaffold.registerParameter("maskHighThresh", 1.0, #1.0
+"""The difference from the mean pixel value (in mean differences) above which a 
+pixel will be marked as in the foreground.""")
+
+class ComputeForegroundMasks(scaffold.Task):
+    """
+    Determine which pixels are in the foreground of the original images of a 
+    sequence by determining how much the differ from the average value.
+    """
+
+    name = "Compute Foreground Masks"
+    dependencies = [LoadImages]
+
+    def run(self):
+        self._images = self._import(LoadImages, "images")
+        self._imageSize = self._images[0].shape
+        self._lowThresh = self._param(MASK_LOW_THRESH)
+        self._highThresh = self._param(MASK_HIGH_THRESH)
+        
+        self._computeAverageDiff()
+        self._computeMasks()
+        self._computeDiffs()
+
+    def export(self):
+        return dict(masks=ImageSeq(self._masks),
+                    diffs=ImageSeq(self._diffs))
+
+    def _computeAverageDiff(self):
+        """Compute the mean and mean difference of each pixel in an image seq.
+
+        Pixels are in the foreground if, for a particular image, they are 
+        sufficiently far from the average (measured in mean differences).
+
+        Also cast all of the images to floating point values in order to avoid
+        rounding errors.
+        """
+        # loop through all of the images and simultaneously compute the sum
+        # and the sum of differences for each pixel
+        average     = self._images[0].astype(np.float32)
+        # add 0.01 to avoid a zero divide
+        averageDiff = 0.01 + np.zeros(self._imageSize, dtype=np.float32)
+        previous    = self._images[0].astype(np.float32)
+        
+        for image in self._images[1:]:
+            image = image.astype(np.float32)
+
+            average += image
+            averageDiff += np.abs(image - previous)
+            previous = image
+
+        # scale the sums so that they represent averages.
+        average /= len(self._images)
+        averageDiff /= len(self._images) - 1
+
+        self._average = average
+        self._averageDiff = averageDiff
+
+    def _makeThresholdImage(self, threshold):
+        """ 
+        Returns an image where all the pixels are threshold mean differences
+        away from the average.
+        """
+        return self._averageDiff*threshold + self._average
+
+    def _computeMasks(self):
+        """
+        Identify all of the pixels which are statistical outliers as part of 
+        the foreground.
+        """
+        highThresh = self._makeThresholdImage(self._highThresh)
+        lowThresh = self._makeThresholdImage(self._lowThresh)
+        
+        self._masks = [(image < lowThresh) | (image > highThresh)
+                       for image in self._images]
+
+    def _computeDiffs(self):
+        """
+        Compute the difference from the mean (in std. dev. units).
+        """
+        self._diffs = [(image - self._average)/self._averageDiff
+                       for image in self._images]
+
+
+FEATURE_RADIUS = scaffold.registerParameter("featureRadius", 5,
+"""The radius (in pixels) of the feature we are trying to identify. Used in the 
+tophat morphological procedure.""")
+
+class RemoveBackground(scaffold.Task):
+
+    name = "Remove Background"
+    dependencies = [LoadImages]
+
+    def run(self):
+        images = self._import(LoadImages, "images")
+        featureRadius = self._param(FEATURE_RADIUS)
+        tophatKernel = makeCircularKernel(featureRadius)
+
+        lessBackground = []
+        for image in images:
+            scaled = forceRange(image, 0, 255)
+            tophat = cv2.morphologyEx(scaled, cv2.MORPH_TOPHAT, tophatKernel)
+            lessBackground.append(tophat)
+        self._images = lessBackground
+
+    def export(self):
+        return dict(images=self._images)
+
+
+class Watershed(scaffold.Task):
+
+    name = "Watershed"
+    dependencies = [RemoveBackground]
+
+    def run(self):
+        images = self._import(RemoveBackground, "images")
+        erodeKernel = makeCircularKernel(2)
+        dilateKernel = makeCircularKernel(2)
+
+        regions = []
+        isolated = []
+        thresholds = []
+        for image in images:
+            #threshold, binary = cv2.threshold(image, 128, 255, cv2.THRESH_BINARY|cv2.THRESH_OTSU)
+            threshold, binary = cv2.threshold(image, 24, 255, cv2.THRESH_BINARY)
+            thresholds.append(threshold)
+
+            # definitely background = 1, unsure = 0
+            # rest are individually numbered particles
+            unsure = cv2.dilate(binary, dilateKernel)
+            _, background = cv2.threshold(unsure, 1, 1, cv2.THRESH_BINARY_INV)
+
+            eroded = cv2.erode(binary, erodeKernel)
+            contours, _ = cv2.findContours(eroded, 
+                                           cv2.RETR_LIST, 
+                                           cv2.CHAIN_APPROX_SIMPLE)
+            foreground = np.zeros_like(background, dtype=np.int32)
+            #for particleId in range(len(contours)):
+            #    color = particleId + 2 # background = 1
+            #    cv2.drawContours(foreground, contours, particleId, color)
+            cv2.drawContours(foreground, contours, -1, 2)
+
+            markers = foreground + background
+            cv2.watershed(toColor(image), markers)
+
+            regions.append(markers)
+
+            select = image.copy()
+            select[markers != 2] = 0
+            isolated.append(select)
+
+        self._regions = regions
+        self._isolated = isolated
+        self.context.debug("Mean threshold = {0}", sum(thresholds)/len(thresholds))
+
+    def export(self):
+        return dict(regions=self._regions, isolated=self._isolated)
+
+
+REGION_SEGMENTATION = scaffold.registerParameter("regionSegmentation", 200.0,
+"""Insert description here.""")
+REGION_THRESHOLD = scaffold.registerParameter("regionThreshold", 16,
+"""The minimum threshold applied to the region-average image.""")
+
+class MergeStatisticalRegions(scaffold.Task):
+
+    name = "Merge Statistical Regions"
+    #dependencies = [RemoveBackground]
+    dependencies = [ComputeForegroundMasks]
+
+    def run(self):
+        #images = self._import(RemoveBackground, "images")
+        images = [forceRange(image*(image > 0), 0, 255).astype(np.uint8)
+                  for image in self._import(ComputeForegroundMasks, "diffs")]
+        segParam = self._param(REGION_SEGMENTATION)
+        threshold = self._param(REGION_THRESHOLD)
+
+        self._masks = []
+        self._groupedByRegions = []
+
+        for image in images[:24]:
+            numRegions, average, regions = \
+                    _regions.mergeStatisticalRegions(image, segParam)
+            self._masks.append(average > threshold)
+            self._groupedByRegions.append(regions)
+            print numRegions
+
+    def export(self):
+        return dict(masks=self._masks, 
+                    groupedByRegions=self._groupedByRegions)
+
 
 class _ImageSeqBase(object):
     """
@@ -234,3 +430,6 @@ def forceRange(image, min, max):
 
 def binaryToGray(image):
     return image.astype(np.uint8)*255
+
+def makeCircularKernel(radius):
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius, radius))

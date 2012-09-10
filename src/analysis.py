@@ -7,7 +7,7 @@ import math
 import tables as tb
 import images
 import scaffold
-import processing
+import particles
 
 _numGridCells = scaffold.registerParameter("numGridCells", [20, 20]
 """The number of rows and columns in the particle grid.""")
@@ -26,7 +26,7 @@ class GridParticles(scaffold.Task):
     
     def __init__(self):
         scaffold.Task.__init__(self, "Grid Particles", 
-                               dependencies=[processing.TrackEllipses(),
+                               dependencies=[particles.TrackParticles(),
                                              images.ParseConfig()])
 
     def isComplete(self, data):
