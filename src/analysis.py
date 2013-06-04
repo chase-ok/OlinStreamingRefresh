@@ -23,13 +23,11 @@ class GridParticles(scaffold.Task):
     Creates an NxM grid and assigns a cell number to each particle at each 
     frame, which is useful for local correlations and general optimizations.
     """
-    
-    def __init__(self):
-        scaffold.Task.__init__(self, "Grid Particles", 
-                               dependencies=[particles.TrackParticles(),
-                                             images.ParseConfig()])
 
-    def isComplete(self, data):
+    name = "Grid Particles"
+    dependencies = [particles.TrackParticles, images.ParseConfig]
+
+    def isComplete(self):
         return data.hasNode(getCellNumbersPath(data.params[_numGridCells]))
 
     def copy(self):

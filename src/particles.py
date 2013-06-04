@@ -58,20 +58,20 @@ class ParticleFinder(scaffold.Task):
 
         table.flush()
 
-class FindParticlesViaRegions(ParticleFinder):
+class FindParticlesViaMasks(ParticleFinder):
     """
     Identifies ellipses in a binary image and dumps them into an ellipses
     table in the HDF5 file.
     """
 
     name = "Find Ellipses"
-    dependencies = [im.ParseConfig, im.MergeStatisticalRegions]
+    dependencies = [im.ParseConfig, im.ComputeForegroundMasks]
 
     def isComplete(self):
         return self.context.hasNode(ELLIPSE_TABLE_PATH)
 
     def run(self):
-        masks = self._import(im.MergeStatisticalRegions, "masks")
+        masks = self._import(im.ComputeForegroundMasks, "masks")
         self._findEllipsesViaContours(masks)
 
     def export(self):

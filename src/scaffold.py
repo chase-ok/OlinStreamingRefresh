@@ -5,15 +5,13 @@ parameters a little easier.
 """
 
 class MissingDependency(Exception):
-
     def __init__(self, task, dependency):
         self.task = task
         self.dependency = dependency
-
     def __str__(self):
         return """Missing dependency: task "{0}" is dependent on {1}, but this
                dependency is not declared in {2}.dependencies!""".format(
-               str(self.task), str(self.dependency), str(self.task.__class__))
+               self.task, self.dependency, self.task.__class__)
 
 class Task(object):
     """
@@ -73,6 +71,55 @@ class Task(object):
 
     def __str__(self):
         return self.name
+
+
+class MissingExport(Exception):
+    def __init__(self, interface, task, export):
+        self.interface = interface
+        self.task = task
+        self.export = export
+    def __str__(self):
+        return """{0} did not export {1} as promised! {0} implements
+               interface {2} and therefore must export {1}.""".format(
+               self.task, self.export, self.interface)
+
+class TaskInterface(Task):
+
+    willExport = []
+
+    def __init__(self,  implementation, context):
+        super(TaskInterface, self).__init__(context)
+        self._impl = implementation
+
+    def isComplete(self): return self._impl.isComplete()
+    def run(self): self._impl.run()
+
+    def export(self):
+        exports = self._impl.export()
+        for export in self.willExport:
+            if export not in exports:
+                raise MissingExport(self, self._impl, export)
+        return exports
+
+
+class MultipleDefaultImplementations(Exception):
+    def __init__(self, interface, tasks):
+        self.interface = interface
+        self.task = tasks
+    def __str__(self):
+        return "{0} has multiple default implementations: {1} (at least)."\
+               .format(self.interface, ", ".join(map(str,self.tasks)))
+
+_implementations = dict()
+_defaultImplementations = dict()
+def implements(task, interface, default=False):
+    _implementations.setdefault(interface, set()).add(task)
+    if default:
+        if interface in defaults:
+            raise MultipleDefaultImplementations(self, 
+                                                 [task, defaults[interface]])
+        _defaultImplementations[interface] = task
+
 
 class Logger(object):
 
@@ -177,15 +224,30 @@ class Context(object):
         self.logger.debug(*args, **kwargs)
 
 class DependencyCycle(Exception):
-
     def __init__(self, task, unresolvedDependencies):
         self.task = task
         self.unresolved= unresolvedDependencies
-
     def __str__(self):
         return """There is a dependency cycle: task "{0}" cannot resolve the
                following dependencies: {1}!""".format(
-               self.task.name, ", ".join(t.name for t in self.unresolved))
+               self.task, ", ".join(t.name for t in self.unresolved))
+
+class MissingImplementation(Exception):
+    def __init__(self, interface):
+        self.interface = interface
+    def __str__(self):
+        return """No implementation of {0} was included in the schedule and no 
+               default was found.""".format(self.interface)
+
+class MultipleImplementations(Exception):
+    def __init__(self, interface, tasks):
+        self.interface = interface
+        self.task = tasks
+    def __str__(self):
+        return """{0} has multiple implementations in the schedule: {1}. There 
+               must be one (or zero if a default implementation is 
+               specified).""".format(
+               self.interface, ", ".join(map(str, self.tasks)))
 
 class Scheduler(object):
     """
@@ -211,6 +273,8 @@ class Scheduler(object):
 
         forceRedo=True forces all of the tasks to be run, regardless of any
         cached values (useful for parameter changes)."""
+        implementations = self._fillInterfaces()
+
         # forward = dependent on, reverse = pre-req of 
         forward, reverse = self._computeLinks()
 
@@ -230,8 +294,38 @@ class Scheduler(object):
                 raise DependencyCycle(task, dependencies)
 
         context.debug("Schedule={0}", [t.name for t in schedule])
-        for task in schedule:
+        for taskClass in schedule:
+            if issubclass(taskClass, TaskInterface):
+                impl = implementations[task](context)
+                task = taskClass(impl, context)
+            else:
+                task = taskClass(context)
             self._runTask(task, context, forceRedo)
+
+    def _fillInterfaces(self):
+        to_add = []
+        implementations = {}
+
+        for interface in self._tasks:
+            if not issubclass(interface, TaskInterface): continue
+
+            allImpls = [impl for impl in _implementations[interface]
+                        if impl in self._tasks]
+            if len(allImpls) == 0:
+                try:
+                    impl = _defaultImplementations[interface]
+                    if impl not in self._tasks: to_add.add(impl)
+                except KeyError:
+                    raise MissingImplementation(interface)
+            elif len(allImpls) == 1:
+                impl = allImpls[0]
+            else:
+                raise MultipleImplementations(interface, allImpls)
+
+            implementations[interface] = impl
+
+        for task in to_add: self.addTask(task)
+        return implementations
 
     def _computeLinks(self):
         forward = dict((task, set(task.dependencies)) for task in self._tasks)
@@ -243,17 +337,15 @@ class Scheduler(object):
 
         return forward, reverse
 
-    def _runTask(self, taskClass, context, forceRedo):
-        task = taskClass(context)
-
-        context.log("Starting task: {0}", taskClass.name)
+    def _runTask(self, task, context, forceRedo):
+        context.log("Starting task: {0}", task.name)
         if forceRedo or not task.isComplete():
             task.run()
         else:
             context.log("Already complete.")
-        context.log("Finished task: {0}", taskClass.name)
+        context.log("Finished task: {0}", task.name)
+        context.addExports(task.__class__, task.export())
 
-        context.addExports(taskClass, task.export())
 
 class Parameter(object):
     """

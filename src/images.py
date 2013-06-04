@@ -91,6 +91,10 @@ class LoadImages(scaffold.Task):
         return dict(images=LazyImageSeq(paths))
 
 
+class ComputeForegroundMasks(scaffold.TaskInterface):
+    name = "Compute Foreground Masks"
+    willExport = ['masks']
+
 MASK_LOW_THRESH = scaffold.registerParameter("maskLowThresh", -10.0, #-1.3
 """The difference from the mean pixel value (in mean differences) below which a 
 pixel will be marked as in the foreground.""")
@@ -98,7 +102,7 @@ MASK_HIGH_THRESH = scaffold.registerParameter("maskHighThresh", 3.0, #1.0
 """The difference from the mean pixel value (in mean differences) above which a 
 pixel will be marked as in the foreground.""")
 
-class ComputeForegroundMasks(scaffold.Task):
+class ComputeDifferenceMasks(scaffold.Task):
     """
     Determine which pixels are in the foreground of the original images of a 
     sequence by determining how much the differ from the average value.
@@ -106,6 +110,8 @@ class ComputeForegroundMasks(scaffold.Task):
 
     name = "Compute Foreground Masks"
     dependencies = [LoadImages]
+
+    scaffold.implements(ComputeDifferenceMasks, ComputeForegroundMasks)
 
     def run(self):
         self._images = self._import(LoadImages, "images")
@@ -262,6 +268,9 @@ class MergeStatisticalRegions(scaffold.Task):
     name = "Merge Statistical Regions"
     dependencies = [RemoveBackground]
     #dependencies = [ComputeForegroundMasks]
+
+    scaffold.implements(MergeStatisticalRegions, ComputeForegroundMasks, 
+                        default=True)
 
     def run(self):
         images = self._import(RemoveBackground, "images")
