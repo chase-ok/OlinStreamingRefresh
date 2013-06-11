@@ -294,13 +294,14 @@ class Scheduler(object):
                 raise DependencyCycle(task, dependencies)
 
         context.debug("Schedule={0}", [t.name for t in schedule])
-        for taskClass in schedule:
+        for i, taskClass in enumerate(schedule):
             if issubclass(taskClass, TaskInterface):
                 impl = implementations[task](context)
                 task = taskClass(impl, context)
             else:
                 task = taskClass(context)
             self._runTask(task, context, forceRedo)
+            self._resolveExports(task, contex, schedule[i+1:])
 
     def _fillInterfaces(self):
         to_add = []
@@ -344,7 +345,25 @@ class Scheduler(object):
         else:
             context.log("Already complete.")
         context.log("Finished task: {0}", task.name)
-        context.addExports(task.__class__, task.export())
+        
+
+    def _resolveExports(self, task, context, remaining):
+        def stillNeeded(taskClass):
+            for laterTask in remaining:
+                if taskClass in laterTask.dependencies:
+                    return True
+            return False
+
+        if stillNeeded(task.__class__):
+            context.addExports(task.__class__, task.export())
+        
+        # see if we can free up some memory
+        for dependency in task.dependencies:
+            if not stillNeeded(dependency):
+                try:
+                    del context.exports[dependency]
+                except KeyError: 
+                    pass
 
 
 class Parameter(object):

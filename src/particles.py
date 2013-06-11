@@ -405,6 +405,9 @@ class TrackParticles(scaffold.Task):
     def isComplete(self):
         return self.context.hasNode("tracks")
 
+    def export(self):
+        return dict(tracks=self.context.node("tracks"))
+
     def run(self):
         self._ellipses = self._import(FindParticlesViaEdges, "ellipses")
 
@@ -445,8 +448,9 @@ class TrackParticles(scaffold.Task):
                                          self._memory)
         
     def _buildTable(self):
-        table = self.context.createTable("tracks", TracksTable, 
+        table = self.context.createTable("tracks_unsorted", TracksTable, 
                                          expectedrows=self._ellipses.nrows) # max
+        table.cols.time.createCSIndex()
         track = table.row # shortcut
         
         for link in self._links:
@@ -458,9 +462,9 @@ class TrackParticles(scaffold.Task):
                 track['area']     = ellipse['area']
                 
                 dt = (nextEllipse['frame'] - ellipse['frame'])*self._dt
-                dp = nextEllipse['position'] - ellipse['position']
-                track['velocity'] = dp/dt
+                dx = nextEllipse['position'] - ellipse['position']
+                track['velocity'] = dx/dt
                 track.append()
-                
+        # TODO: include more points in velocity
         table.flush()
-                
+        table.copy(newname="tracks", sortby="time")
