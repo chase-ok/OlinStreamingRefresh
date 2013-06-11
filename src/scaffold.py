@@ -115,9 +115,9 @@ _defaultImplementations = dict()
 def implements(task, interface, default=False):
     _implementations.setdefault(interface, set()).add(task)
     if default:
-        if interface in defaults:
-            raise MultipleDefaultImplementations(self, 
-                                                 [task, defaults[interface]])
+        if interface in _defaultImplementations:
+            other = _defaultImplementations[interface]
+            raise MultipleDefaultImplementations(self, [task, other])
         _defaultImplementations[interface] = task
 
 
@@ -301,7 +301,7 @@ class Scheduler(object):
             else:
                 task = taskClass(context)
             self._runTask(task, context, forceRedo)
-            self._resolveExports(task, contex, schedule[i+1:])
+            self._resolveExports(task, context, schedule[i+1:])
 
     def _fillInterfaces(self):
         to_add = []
@@ -356,7 +356,7 @@ class Scheduler(object):
 
         if stillNeeded(task.__class__):
             context.addExports(task.__class__, task.export())
-        
+
         # see if we can free up some memory
         for dependency in task.dependencies:
             if not stillNeeded(dependency):

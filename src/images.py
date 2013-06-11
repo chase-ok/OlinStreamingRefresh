@@ -111,8 +111,6 @@ class ComputeDifferenceMasks(scaffold.Task):
     name = "Compute Foreground Masks"
     dependencies = [LoadImages]
 
-    scaffold.implements(ComputeDifferenceMasks, ComputeForegroundMasks)
-
     def run(self):
         self._images = self._import(LoadImages, "images")
         self._imageSize = self._images[0].shape
@@ -181,6 +179,8 @@ class ComputeDifferenceMasks(scaffold.Task):
         """
         self._diffs = [(image - self._average)/self._averageDiff
                        for image in self._images]
+
+scaffold.implements(ComputeDifferenceMasks, ComputeForegroundMasks)
 
 
 FEATURE_RADIUS = scaffold.registerParameter("featureRadius", 5,
@@ -269,9 +269,6 @@ class MergeStatisticalRegions(scaffold.Task):
     dependencies = [RemoveBackground]
     #dependencies = [ComputeForegroundMasks]
 
-    scaffold.implements(MergeStatisticalRegions, ComputeForegroundMasks, 
-                        default=True)
-
     def run(self):
         images = self._import(RemoveBackground, "images")
         #images = [forceRange(image*(image > 0), 0, 255).astype(np.uint8)
@@ -293,6 +290,9 @@ class MergeStatisticalRegions(scaffold.Task):
     def export(self):
         return dict(masks=self._masks, 
                     groupedByRegions=self._groupedByRegions)
+
+scaffold.implements(MergeStatisticalRegions, ComputeForegroundMasks, 
+                    default=True)
 
 
 class _ImageSeqBase(object):

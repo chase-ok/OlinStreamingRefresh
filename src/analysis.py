@@ -10,7 +10,7 @@ import images
 import scaffold
 import particles
 
-NUM_GRID_CELLS = scaffold.registerParameter("numGridCells", [20, 20]
+NUM_GRID_CELLS = scaffold.registerParameter("numGridCells", [20, 20],
 """The number of rows and columns in the particle grid.""")
 
 def _griddedPath(task, path):
@@ -29,7 +29,8 @@ class GridParticles(scaffold.Task):
         return self.context.hasNode(self._cellsPath)
 
     def export(self):
-        return dict(cellMap=self.contex.node(self._cellMapPath),
+        self._loadCellSize()
+        return dict(cellMap=self.context.node(self._cellMapPath),
                     cells=self.context.node(self._cellsPath),
                     cellCenters=self.context.node(self._cellCentersPath),
                     shape=(np.prod(self._param(NUM_GRID_CELLS)),),
@@ -37,8 +38,7 @@ class GridParticles(scaffold.Task):
 
     def run(self):
         numGridCells = self._param(NUM_GRID_CELLS)
-        imageSize = self._import(images.ParseConfig, "info").imageSize
-        self._cellSize = imageSize/self._numGridCells
+        self._loadCellSize()
         tracks = self._import(particles.TrackParticles, "tracks")
         
         cellMap, cellCenters = self._buildCellMap(numGridCells)
@@ -48,6 +48,10 @@ class GridParticles(scaffold.Task):
         self.context.createArray(self._cellCentersPath, cellCenters)
         self.context.createArray(self._cellsPath, cells)
         self.context.flush()
+
+    def _loadCellSize(self):
+        self._imageSize = self._import(images.ParseConfig, "info").imageSize
+        self._cellSize = self._imageSize/self._param(NUM_GRID_CELLS)
         
     def _buildCellMap(self, numGridCells):
         numRows, numCols = numGridCells
@@ -58,7 +62,7 @@ class GridParticles(scaffold.Task):
         for row in range(numRows):
             for col in range(numCols):
                 cellMap[row, col] = row*numCols + col
-                cellCenters.append([i, j]*cellSize + halfSize)
+                cellCenters.append([row, col]*self._cellSize + halfSize)
 
         return cellMap, np.array(cellCenters, float)
         
@@ -83,26 +87,19 @@ class CalculateByTime(scaffold.Task):
     _tablePath = "OVERRIDEME"
 
     def run(self):
-        tracks = self._import(particles.TrackParticles, "tracks")
-        assert tracks.nrows > 0
+        self._tracks = self._import(particles.TrackParticles, "tracks")
+        assert self._tracks.nrows > 0
 
         self._table = self._setupTable()
-        currentTime = tracks[0]['time']
+        currentTime = self._tracks[0]['time']
         startRow = 0
 
-        for row, time in enumerate(tracks.col('time')):
+        for row, time in enumerate(self._tracks.col('time')):
             if time != currentTime:
                 self._onTime(time, startRow, row)
                 startRow = row
                 currentTime = time
-        self._onFrame()
-
-        for row, track in enumerate(tracks):
-            if track['time'] != currentTime:
-                self._endFrame(currentTime)
-                currentTime = track['time']
-                self._startFrame(currentTime)
-            self._onRow(row, track)
+        self._onTime(currentTime, startRow, self._tracks.nrows)
 
         self._table.flush()
 
@@ -113,9 +110,7 @@ class CalculateByTime(scaffold.Task):
         return self.context.createTable(self._tablePath, TimeTable)
 
     def _makeDataCol(self): raise NotImplemented()
-    def _startFrame(self, time): raise NotImplemented()
-    def _endFrame(self, time): raise NotImplemented()
-    def _onRow(self, row, track): raise NotImplemented()
+    def _onTime(self, time, startRow, stopRow): raise NotImplemented()
 
 
 class GriddedField(CalculateByTime):
@@ -134,14 +129,12 @@ class GriddedField(CalculateByTime):
         self._cells = self._import(GridParticles, "cells")
         CalculateByTime.run(self)
 
-    def _startFrame(self, time):
-        self._resetBuckets(self._shape)
-
-    def _endFrame(self, time):
-        self._appendBuckets(self._table, time)
-
-    def _onRow(self, row, track):
-        self._addToBuckets(row, track, self._cells[row])
+    def _onTime(self, time, start, stop):
+        self._resetBuckets()
+        for offset, track in enumerate(self._tracks.iterrows(start, stop)):
+            row = start + offset
+            self._addToBuckets(row, track, self._cells[row])
+        self._appendBuckets(time)
 
     def _makeDataCol(self):
         return tb.Float32Col(shape=self._shape)
@@ -150,11 +143,11 @@ class GriddedField(CalculateByTime):
         self._sums = np.zeros(shape, np.float32)
         self._counts = np.zeros(shape, np.uint16)
 
-    def _appendBuckets(self, table, time):
+    def _appendBuckets(self, time):
         self._finalizeSums()
-        table.row['time'] = time
-        table.row['data'] = self._sums
-        table.row.append()
+        self._table.row['time'] = time
+        self._table.row['data'] = self._sums
+        self._table.row.append()
 
     def _finalizeSums(self):
         nonzero = self._counts > 0
@@ -169,6 +162,7 @@ class GriddedField(CalculateByTime):
 def _index(i): 
     return max([int(i), 0])
 
+
 class NormalizeVelocities(scaffold.Task):
 
     name = "Normalize Velocities"
@@ -182,9 +176,12 @@ class NormalizeVelocities(scaffold.Task):
 
     def run(self):
         tracks = self._import(particles.TrackParticles, "tracks")
-        normalized = np.empty((tracks.nrows, 2), float)
-        for row, track in enumerate(tracks):
-            normalized[row, :] = _toUnit(track['velocity'])
+        velocities = tracks.col('velocity')
+        magnitudes = np.sqrt(np.sum(velocities**2, axis=1))
+        nonzero = magnitudes > 1e-8
+        normalized = np.zeros_like(velocities)
+        normalized[nonzero, :] = velocities[nonzero, :]\
+                                 /magnitudes[nonzero][:, np.newaxis]
         self.context.createArray("normalizedVelocities", normalized)
 
 
@@ -208,8 +205,8 @@ class CalculateVelocityField(GriddedField):
     def _makeDataCol(self):
         return GriddedField._makeDataCol(self, self._shape + (2,))
 
-    def _resetBuckets(self, shape):
-        GriddedField._resetBuckets(self, shape + (2,))
+    def _resetBuckets(self):
+        GriddedField._resetBuckets(self, self._shape + (2,))
 
     def _addToBuckets(self, row, track, cell):
         GriddedField._addToBuckets(self, track, cell)
@@ -217,6 +214,7 @@ class CalculateVelocityField(GriddedField):
 
     def _finalizeSums(self):
         nonzero = self._counts > 0
+        # TODO: need np.newaxis here?
         self._sums[nonzero, :] /= self._counts[nonzero]
 
 
@@ -230,41 +228,187 @@ class CalculateLocalVelocityCorrelationField(GriddedField):
         self._velocities = self._import(NormalizeVelocities, "velocities")
         GriddedField.run(self)
 
-    def _resetBuckets(self, shape):
-        self._buckets = [[] for _ in range(np.prod(shape))]
+    def _resetBuckets(self):
+        self._buckets = [[] for _ in range(np.prod(self._shape))]
 
     def _addToBuckets(self, row, track, cell):
         self._buckets[cell].append(self._velocities[row])
 
-    def _appendBuckets(self, table, time):
-        table.row['time'] = time
-        table.row['data'] = map(_vectorCorrelation, self._buckets)
-        table.row.append()
+    def _appendBuckets(self, time):
+        self._table.row['time'] = time
+        self._table.row['data'] = map(_vectorCorrelation, self._buckets)
+        self._table.row.append()
 
-RADII = scaffold.registerParameter("radii", np.arrange(1.0, 15, 1)
+
+RADII = scaffold.registerParameter("radii", np.arange(1.0, 15, 1),
 """The successive radii to calculate correlations at.""")
 
-class CorrelateByRadius(CalculateByTime):
+class ComputeCircleAreas(scaffold.Task):
 
-    dependencies = CalculateByTime.dependencies + []
+    name = "Compute Circle Areas"
+    dependencies = [images.ParseConfig]
+
+    def isComplete(self):
+        if not self.context.hasNode("_circleAreasRadii"): return False
+
+        radii = self._param(RADII)
+        match = self.context.node("_circleAreasRadii")
+        # TODO: Allow subsets instead of strict matches
+        return len(radii) == len(match) and (np.abs(radii-match) < 0.1).all()
+
+    def export(self):
+        self._table = self.context.node("_circleAreas")
+        self._loadShape()
+        self._areas = self._table.cols.areas
+        return dict(table=self._table,
+                    circleArea=self._getArea)
 
     def run(self):
         self._radii = self._param(RADII)
-        self._data = np.zeros_like(self.radii, float)
+        self._loadShape()
+
+        self._makeTable()
+        for radius in self._radii:
+            self._table.row['radius'] = radius
+            self._table.row['areas'] = self._computeForRadius(radius)
+            self._table.row.append()
+        self._table.flush()
+
+    def _loadShape(self):
+        self._imageSize = self._import(images.ParseConfig, "info").imageSize
+        self._shape = (self._imageSize/2 + 1).astype(int)
+
+    def _makeTable(self):
+        class AreasTable(tb.IsDescription):
+            radius = tb.Float32Col(pos=0)
+            areas = tb.Float32Col(shape=self._shape)
+        self._table = self.context.createTable("_circleAreas", AreasTable, 
+                                               expectedrows=len(self._radii))
+        self._table.cols.radius.createCSIndex()
+
+    def _computeForRadius(self, r):
+        areas = np.empty(self._shape, np.float32)
+
+        for x in range(self._shape[1]):
+            clipLeft = x - r < 0
+            for y in range(self._shape[0]):    
+                clipTop = y - r < 0
+
+                if clipLeft and clipTop:
+                    area = self._clipCorner(x, y, r)
+                elif clipLeft and not clipTop:
+                    area = self._clipSide(x, r)
+                elif not clipLeft and clipTop:
+                    area = self._clipSide(y, r)
+                else:
+                    area = math.pi*r**2
+                areas[y, x] = area
+
+        return areas
+
+    def _clipCorner(self, x, y, r):
+        x2, y2, r2 = x**2, y**2, r**2
+            
+        if x2 + y2 < r2:
+            xIntercept = x + math.sqrt(r2 - y2)
+            yIntercept = y + math.sqrt(r2 - x2)
+            angle = 2*math.asin(math.sqrt(xIntercept*yIntercept)/(2*r))
+            triangle = 0.5*xIntercept*yIntercept
+            chord = 0.5*r2*(angle - math.sin(angle))
+            return triangle + chord
+        else:
+            return x*math.sqrt(r2 - x2) + y*math.sqrt(r2 - y2) + \
+                   r2*(math.asin(x/r) + math.asin(y/r))
+
+    def _clipSide(self, x, r):
+        return x*math.sqrt(r**2 - x**2) + r**2*(math.pi/2 + math.asin(x/r))
+
+    def _getArea(self, x, y, radiusIndex):
+        x, y = int(x), int(y)
+        if x >= self._shape[1]: x = 2*self._shape[1] - x - 1
+        if y >= self._shape[0]: y = 2*self._shape[0] - y - 1
+        return self._areas[radiusIndex][y, x]
+
+
+class CorrelateByRadius(CalculateByTime):
+
+    dependencies = CalculateByTime.dependencies + [ComputeCircleAreas]
+
+    def run(self):
+        self._radii = self._param(RADII)
+        self._data = np.zeros_like(self._radii, float)
+        self._circleArea = self._import(ComputeCircleAreas, "circleArea")
+        CalculateByTime.run(self)
 
     def _makeDataCol(self):
         return tb.Float32Col(shape=self._radii.shape)
 
-    def _startFrame(self, time):
-        self._data.fill(0.0)
+    def _onTime(self, time, start, stop):
+        self._data.fill(0)
 
-    def _endFrame(self, time):
-        table.row['time'] = time
-        table.row['data'] = self._data
-        table.row.append()
+        tracks = self._tracks.read(start, stop)
+        positions = tracks["position"]
+        info = dict(time=time, start=start, stop=stop, tracks=tracks)
 
-    def _onRow(self, row, track):
-        pass # TODO grouping by frame, row range maybe?
+        for offset, track in enumerate(tracks):
+            info['offset'] = offset
+            info['track'] = track
+
+            position = track['position']
+            distancesSquared = ((positions-position)**2).sum(axis=1)
+
+            for i, rOuter in enumerate(self._radii):
+                rInner = 1e-8 if i == 0 else self._radii[i-1]
+
+                info['inAnnulus'] = (distancesSquared >= rInner**2) &\
+                                    (distancesSquared <= rOuter**2)
+                if len(info['inAnnulus']) == 0: continue
+
+                result = self._correlate(info)
+                if result:
+                    x, y = position
+                    area = self._circleArea(x, y, i)
+                    if i != 0: area -= self._circleArea(x, y, i-1)
+                    self._data[i] += result/area
+
+        self._data /= len(tracks) # computing the average
+
+        self._table.row['time'] = time
+        self._table.row['data'] = self._data
+        self._table.row.append()
+
+    def _correlate(self, info): raise NotImplemented()
+
+
+class CorrelateParticleDistance(CorrelateByRadius):
+
+    name = "Correlate Particle Distance"
+    _tablePath = "particleDistanceCorrelation"
+
+    def _correlate(self, info):
+        return info['inAnnulus'].sum()
+
+
+class CorrelateVelocity(CorrelateByRadius):
+
+    name = "Correlate Velocity"
+    dependencies = CalculateByTime.dependencies + [NormalizeVelocities]
+    _tablePath = "velocityCorrelation"
+
+    def run(self):
+        self._velocities = self._import(NormalizeVelocities, "velocities")
+        CorrelateByRadius.run(self)
+
+    def _onTime(self, time, start, stop):
+        self._currentVelocities = self._velocities[start:stop, :]
+        CorrelateByRadius._onTime(self, time, start, stop)
+
+    def _correlate(self, info):
+        velocities = self._currentVelocities[info['inAnnulus'], :]
+        total = np.dot(velocities, 
+                       self._currentVelocities[info['offset']]).sum()
+        return total/len(info['inAnnulus'])
+
 
 
 def _toUnit(vector):
@@ -275,10 +419,10 @@ def _toDirector(angle):
     return np.array([np.cos(angle), np.sin(angle)])
 
 def _vectorCorrelation(unitVectors):
-    n = len(vectors)
+    n = len(unitVectors)
     if n < 2: return 0.0
     
-    total = sum(np.dot(unitVectors[i], unitVectors[j]),
+    total = sum(np.dot(unitVectors[i], unitVectors[j])
                 for i in range(n-1)
                 for j in range(i+1, n))
     # n*(n-1)/2 is the total number of dot prods

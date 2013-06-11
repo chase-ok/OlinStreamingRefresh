@@ -376,7 +376,7 @@ class TracksTable(tb.IsDescription):
     position = tb.Float32Col(pos=1, shape=2)
     velocity = tb.Float32Col(pos=2, shape=2)
     angle    = tb.Float32Col(pos=3)
-    area     = tb.Float32Col(pos=4)
+    axes     = tb.Float32Col(pos=4, shape=2)
     
 TRACK_SEARCH_RADIUS = scaffold.registerParameter("trackSearchRadius", 0.75,
 """The maximum distance to look for the next particle in a track.""")
@@ -414,6 +414,7 @@ class TrackParticles(scaffold.Task):
         info = self._import(im.ParseConfig, "info")
         self._frameDimensions = info.imageSize
         self._dt = info.dt
+        self._pixel = info.pixel
         self._searchRadius = self._param(TRACK_SEARCH_RADIUS)
         self._memory = self._param(TRACK_MEMORY)
         
@@ -425,14 +426,13 @@ class TrackParticles(scaffold.Task):
         # Each 'level' consists of a list of all of the points in a single image
         # frame
         levels = []
-        pixel = self._import(im.ParseConfig, "info").pixel
         counter = 0
 
         ellipses = self._ellipses # shortcut
         for rows in groupEllipsesByFrame(ellipses):
             currentLevel = []
             for row in rows:
-                position = pixel*ellipses[row]["position"]
+                position = self._pixel*ellipses[row]["position"]
                 point = TrackParticles.Point(ellipses[row]['frame'], position, counter)
                 currentLevel.append(point)
                 counter += 1
@@ -457,9 +457,9 @@ class TrackParticles(scaffold.Task):
             ellipses = [self._ellipses[p.row] for p in link.points]
             for ellipse, nextEllipse in zip(ellipses, ellipses[1:]):
                 track['time']     = ellipse['frame']*self._dt
-                track['position'] = ellipse['position']
+                track['position'] = ellipse['position']*self._pixel
                 track['angle']    = ellipse['angle']
-                track['area']     = ellipse['area']
+                track['axes']     = ellipse['axes']
                 
                 dt = (nextEllipse['frame'] - ellipse['frame'])*self._dt
                 dx = nextEllipse['position'] - ellipse['position']
@@ -467,4 +467,6 @@ class TrackParticles(scaffold.Task):
                 track.append()
         # TODO: include more points in velocity
         table.flush()
-        table.copy(newname="tracks", sortby="time")
+        newTable = table.copy(newname="tracks", sortby="time")
+        newTable.flush()
+        self.context.debug("Tracks table: {0}", newTable)
