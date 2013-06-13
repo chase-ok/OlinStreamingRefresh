@@ -84,9 +84,17 @@ class GridParticles(scaffold.Task):
 class CalculateByTime(scaffold.Task):
 
     dependencies = [particles.TrackParticles]
-    _tablePath = "OVERRIDEME"
+    _tablePath = None
+
+    def isComplete(self):
+        return self.context.hasNode(self._tablePath)
+
+    def export(self):
+        return dict(table=self.context.node(self._tablePath))
 
     def run(self):
+        if self._tablePath is None: raise NotImplemented
+
         self._tracks = self._import(particles.TrackParticles, "tracks")
         assert self._tracks.nrows > 0
 
@@ -109,17 +117,13 @@ class CalculateByTime(scaffold.Task):
             data = self._makeDataCol()
         return self.context.createTable(self._tablePath, TimeTable)
 
-    def _makeDataCol(self): raise NotImplemented()
-    def _onTime(self, time, startRow, stopRow): raise NotImplemented()
+    def _makeDataCol(self): raise NotImplemented
+    def _onTime(self, time, startRow, stopRow): raise NotImplemented
 
 
 class GriddedField(CalculateByTime):
 
     dependencies = CalculateByTime.dependencies + [GridParticles]
-    _tableName = "OVERRIDEME"
-
-    def isComplete(self):
-        return self.context.hasNode(self._tablePath)
 
     def export(self):
         return dict(field=self.context.node(self._tablePath))
@@ -139,9 +143,9 @@ class GriddedField(CalculateByTime):
     def _makeDataCol(self):
         return tb.Float32Col(shape=self._shape)
 
-    def _resetBuckets(self, shape):
-        self._sums = np.zeros(shape, np.float32)
-        self._counts = np.zeros(shape, np.uint16)
+    def _resetBuckets(self):
+        self._sums = np.zeros(self._shape, np.float32)
+        self._counts = np.zeros(self._shape, np.uint16)
 
     def _appendBuckets(self, time):
         self._finalizeSums()
@@ -185,6 +189,24 @@ class NormalizeVelocities(scaffold.Task):
         self.context.createArray("normalizedVelocities", normalized)
 
 
+class CalculateDirectors(scaffold.Task):
+
+    name = "Calculate Directors"
+    dependencies = [particles.TrackParticles]
+
+    def isComplete(self):
+        return self.context.hasNode("directors")
+
+    def export(self):
+        return dict(directors=self.context.node("directors"))
+
+    def run(self):
+        tracks = self._import(particles.TrackParticles, "tracks")
+        angles = tracks.col('angle')
+        directors = np.vstack([np.cos(angles), np.sin(angles)]).T
+        self.context.createArray("directors", directors)
+
+
 class CalculateDensityField(GriddedField):
 
     name = "Calculate Density Field"
@@ -203,19 +225,19 @@ class CalculateVelocityField(GriddedField):
     _tableName = "velocityField"
 
     def _makeDataCol(self):
-        return GriddedField._makeDataCol(self, self._shape + (2,))
+        return tb.Float32Col(shape=self._shape + (2,))
 
     def _resetBuckets(self):
-        GriddedField._resetBuckets(self, self._shape + (2,))
+        self._sums = np.zeros(self._shape + (2,), np.float32)
+        self._counts = np.zeros(self._shape, np.uint16)
 
     def _addToBuckets(self, row, track, cell):
-        GriddedField._addToBuckets(self, track, cell)
+        GriddedField._addToBuckets(self, row, track, cell)
         self._sums[cell, :] += track['velocity']
 
     def _finalizeSums(self):
         nonzero = self._counts > 0
-        # TODO: need np.newaxis here?
-        self._sums[nonzero, :] /= self._counts[nonzero]
+        self._sums[nonzero, :] /= self._counts[nonzero][:, np.newaxis]
 
 
 class CalculateLocalVelocityCorrelationField(GriddedField):
@@ -236,8 +258,18 @@ class CalculateLocalVelocityCorrelationField(GriddedField):
 
     def _appendBuckets(self, time):
         self._table.row['time'] = time
-        self._table.row['data'] = map(_vectorCorrelation, self._buckets)
+        self._table.row['data'] = map(self._vectorCorrelation, self._buckets)
         self._table.row.append()
+
+    def _vectorCorrelation(self, vectors):
+        n = len(vectors)
+        if n < 2: return 0.0
+        
+        total = sum(np.dot(vectors[i], vectors[j])
+                    for i in range(n-1)
+                    for j in range(i+1, n))
+        # n*(n-1)/2 is the total number of dot prods
+        return total/(n*(n-1)/2) 
 
 
 RADII = scaffold.registerParameter("radii", np.arange(1.0, 15, 1),
@@ -377,7 +409,7 @@ class CorrelateByRadius(CalculateByTime):
         self._table.row['data'] = self._data
         self._table.row.append()
 
-    def _correlate(self, info): raise NotImplemented()
+    def _correlate(self, info): raise NotImplemented
 
 
 class CorrelateParticleDistance(CorrelateByRadius):
@@ -389,10 +421,10 @@ class CorrelateParticleDistance(CorrelateByRadius):
         return info['inAnnulus'].sum()
 
 
-class CorrelateVelocity(CorrelateByRadius):
+class CorrelateVelocities(CorrelateByRadius):
 
-    name = "Correlate Velocity"
-    dependencies = CalculateByTime.dependencies + [NormalizeVelocities]
+    name = "Correlate Velocities"
+    dependencies = CorrelateByRadius.dependencies + [NormalizeVelocities]
     _tablePath = "velocityCorrelation"
 
     def run(self):
@@ -410,20 +442,43 @@ class CorrelateVelocity(CorrelateByRadius):
         return total/len(info['inAnnulus'])
 
 
+class CorrelateDirectors(CorrelateByRadius):
 
-def _toUnit(vector):
-    mag = norm(vector)
-    return vector/mag if mag > 1e-8 else 0*vector
+    name = "Correlate Director"
+    dependencies = CorrelateByRadius.dependencies + [CalculateDirectors]
+    _tablePath = "directorCorrelation"
 
-def _toDirector(angle):
-    return np.array([np.cos(angle), np.sin(angle)])
+    def run(self):
+        self._directors = self._import(CalculateDirectors, "directors")
+        CorrelateByRadius.run(self)
 
-def _vectorCorrelation(unitVectors):
-    n = len(unitVectors)
-    if n < 2: return 0.0
-    
-    total = sum(np.dot(unitVectors[i], unitVectors[j])
-                for i in range(n-1)
-                for j in range(i+1, n))
-    # n*(n-1)/2 is the total number of dot prods
-    return total/(n*(n-1)/2) 
+    def _onTime(self, time, start, stop):
+        self._currentDirectors = self._directors[start:stop, :]
+        CorrelateByRadius._onTime(self, time, start, stop)
+
+    def _correlate(self, info):
+        directors = self._currentDirectors[info['inAnnulus'], :]
+        total = np.dot(directors, self._currentDirectors[info['offset']]).sum()
+        return total/len(info['inAnnulus'])
+
+
+class CorrelateDirectorVelocities(CorrelateByRadius):
+
+    name = "Correlate Director-Velocities"
+    dependencies = CorrelateByRadius.dependencies + \
+                   [CalculateDirectors, NormalizeVelocities]
+    _tablePath = "directorVelocitiesCorrelation"
+
+    def run(self):
+        self._directors = self._import(CalculateDirectors, "directors")
+        self._velocities = self._import(NormalizeVelocities, "velocities")
+        CorrelateByRadius.run(self)
+
+    def _onTime(self, time, start, stop):
+        self._currentVelocities = self._velocities[start:stop, :]
+        CorrelateByRadius._onTime(self, time, start, stop)
+
+    def _correlate(self, info):
+        total = np.dot(self._currentVelocities[info['inAnnulus'], :],
+                       self._directors[info['start'] + info['offset']]).sum()
+        return total/len(info['inAnnulus'])
