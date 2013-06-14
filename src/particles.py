@@ -71,7 +71,8 @@ class FindParticlesViaMasks(ParticleFinder):
         return self.context.hasNode(ELLIPSE_TABLE_PATH)
 
     def run(self):
-        masks = self._import(im.ComputeForegroundMasks, "masks")
+        masks = [row['image'] for row in 
+                 self._import(im.ComputeForegroundMasks, "masks")]
         self._findEllipsesViaContours(masks)
 
     def export(self):
@@ -96,10 +97,17 @@ class FindParticlesViaMorph(ParticleFinder):
     name = "Find Particles via Morphological Operations"
     dependencies = [im.LoadImages, im.ComputeForegroundMasks]
 
+    def isComplete(self):
+        return self.context.hasNode("morphMax")
+
+    def export(self):
+        return dict(images=self.context.node("morphMax"),
+                    ellipses=self.context.node(ELLIPSE_TABLE_PATH))
+
     def run(self):
         self._images = self._import(im.LoadImages, "images")
         self._masks = self._import(im.ComputeForegroundMasks, "masks")
-        self._imageSize = self._images[0].shape
+        self._imageSize = self._images[0]['image'].shape
 
         self._featureRadius = self._param(im.FEATURE_RADIUS)
         self._dilationRadius = self._param(DILATION_RADIUS)
@@ -112,19 +120,17 @@ class FindParticlesViaMorph(ParticleFinder):
 
         self._doMorph()
         self._findLocalMax()
-        self._findEllipsesViaContours(self._maxed)
+        im.createImageTable(self, "morphMax", self._maxed)
 
-    def export(self):
-        return dict(images=im.ImageSeq(self._maxed),
-                    ellipses=self.context.node(ELLIPSE_TABLE_PATH))
+        self._findEllipsesViaContours(self._maxed)
 
     def _doMorph(self):
         """Apply a gaussian blur and then a tophat."""
         tophatKernel = im.makeCircularKernel(self._featureRadius)
 
         morphed = []
-        for image in self._images:
-            scaled = im.forceRange(image, 0.0, 1.0) # scale pixel values to 0-1
+        for row in self._images:
+            scaled = im.forceRange(row['image'], 0.0, 1.0) # scale pixel values to 0-1
             blurred = cv2.GaussianBlur(scaled, (0, 0), self._blurSigma)
             tophat = cv2.morphologyEx(blurred, cv2.MORPH_TOPHAT, tophatKernel)
             # maximize contrast by forcing the range to be 0-1 again
@@ -204,20 +210,26 @@ class FindParticlesViaEdges(scaffold.Task):
     name = "Fit Model to Images"
     dependencies = [im.ParseConfig, im.RemoveBackground]
 
-    def run(self):
-        self._images = self._import(im.RemoveBackground, "images")
+    def isComplete(self):
+        return self.context.hasNode("ellipses_")
 
-        #debug
-        self._seedImages = []
+    def export(self):
+        return dict(ellipses=self.context.node("ellipses_"),
+                    seedImages=self.context.node("edgesSeedImages"))
+
+    def run(self):
+        images = self._import(im.RemoveBackground, "images")
+        self._seedImages = [] #debug
 
         perFrame = self._param(EXPECTED_ELLIPSES_PER_FRAME)
         self._table = self.context.createTable("ellipses_", EllipseTable,
-                                               expectedrows=perFrame*len(self._images))
-        for i, image in enumerate(self._images[:50]):
-            particles = self._seedParticles(image)
-            particles = self._refineParticles(particles, image)
+                                               expectedrows=perFrame*images.nrows)
+        for i, row in enumerate(images.iterrows()):
+            particles = self._seedParticles(row['image'])
+            particles = self._refineParticles(particles, row['image'])
             self._render(i, particles)
         self._table.flush()
+        im.createImageTable(self, "edgesSeedImages", self._seedImages)
 
     def _seedParticles(self, image):
         #compute edges
@@ -315,6 +327,7 @@ class FindParticlesViaEdges(scaffold.Task):
         return merged
 
     def _splitConjoined(self, conjoined):
+        # TODO: implement me!
         return conjoined
 
     def _render(self, frameNum, particles):
@@ -325,10 +338,6 @@ class FindParticlesViaEdges(scaffold.Task):
             ellipse['angle'] = particle.angle
             ellipse['axes'] = particle.axes
             ellipse.append()
-
-    def export(self):
-        return dict(ellipses=self.context.node("ellipses_"),
-                    seedImages=self._seedImages)
 
 _TO_RADIANS = math.pi/180
 
@@ -469,4 +478,3 @@ class TrackParticles(scaffold.Task):
         table.flush()
         newTable = table.copy(newname="tracks", sortby="time")
         newTable.flush()
-        self.context.debug("Tracks table: {0}", newTable)

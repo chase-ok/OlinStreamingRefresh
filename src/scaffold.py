@@ -4,6 +4,9 @@ Contains a set of helper methods/classes to make organization of tasks and
 parameters a little easier.
 """
 
+import tables as tb
+import numpy as np
+
 class MissingDependency(Exception):
     def __init__(self, task, dependency):
         self.task = task
@@ -146,6 +149,8 @@ class PrintLogger(Logger):
     def _doLog(self, message):
         print message
 
+DEFAULT_FILTERS = tb.Filters(complevel=1, complib='blosc')
+
 class Context(object):
     """
     Maintains most of the program state. Stores references to the hdf5 file,
@@ -192,12 +197,26 @@ class Context(object):
         args and kwargs are passed on to the hdf5 createTable method.
         """
         self.clearNode(name)
+        kwargs.setdefault('filters', DEFAULT_FILTERS)
         return self.hdf5.createTable(self.root, name, *args, **kwargs)
+
+    def createChunkArray(self, name, array, *args, **kwargs):
+        """Creates a chunked array with the given name under root.
+
+        args and kwargs are passed on to the hdf5 createCArray method.
+        """
+        self.clearNode(name)
+        kwargs.setdefault('filters', DEFAULT_FILTERS)
+        kwargs.setdefault('atom', tb.Atom.from_dtype(array.dtype))
+        kwargs.setdefault('shape', array.shape)
+        cArray = self.hdf5.createCArray(self.root, name, *args, **kwargs)
+        cArray[:, :] = array
+        return cArray
 
     def createArray(self, name, *args, **kwargs):
         """Creates an array with the given name under root.
 
-        args and kwargs are passed on to the hdf5 createTable method.
+        args and kwargs are passed on to the hdf5 createArray method.
         """
         self.clearNode(name)
         return self.hdf5.createArray(self.root, name, *args, **kwargs)
@@ -258,15 +277,21 @@ class Scheduler(object):
     def __init__(self, tasks=None):
         """Takes a list of Task classes (order doesn't matter)."""
         self._tasks = set()
+        self._redos = set()
         if tasks:
             for task in tasks: self.addTask(task)
         
-    def addTask(self, taskClass):
-        """Adds a task (and all of its dependencies) to the schedule."""
+    def addTask(self, taskClass, forceRedo=False):
+        """Adds a task (and all of its dependencies) to the schedule.
+
+        If forceRedo is True, the task and all those dependent on it will be 
+        recomputed."""
         if taskClass not in self._tasks:
             self._tasks.add(taskClass)
             for dependency in taskClass.dependencies:
                 self.addTask(dependency)
+        if forceRedo:
+            self._redos.add(taskClass)
         
     def run(self, context, forceRedo=False):
         """Runs all of the scheduled tasks under the given context.
@@ -293,14 +318,16 @@ class Scheduler(object):
             if dependencies:
                 raise DependencyCycle(task, dependencies)
 
-        context.debug("Schedule={0}", [t.name for t in schedule])
+        #context.debug("Schedule={0}", [t.name for t in schedule])
+        recomputed = set()
         for i, taskClass in enumerate(schedule):
             if issubclass(taskClass, TaskInterface):
-                impl = implementations[task](context)
+                impl = implementations[taskClass](context)
                 task = taskClass(impl, context)
             else:
                 task = taskClass(context)
-            self._runTask(task, context, forceRedo)
+
+            self._runTask(task, context, forceRedo, recomputed)
             self._resolveExports(task, context, schedule[i+1:])
 
     def _fillInterfaces(self):
@@ -315,7 +342,7 @@ class Scheduler(object):
             if len(allImpls) == 0:
                 try:
                     impl = _defaultImplementations[interface]
-                    if impl not in self._tasks: to_add.add(impl)
+                    if impl not in self._tasks: to_add.append(impl)
                 except KeyError:
                     raise MissingImplementation(interface)
             elif len(allImpls) == 1:
@@ -323,6 +350,7 @@ class Scheduler(object):
             else:
                 raise MultipleImplementations(interface, allImpls)
 
+            interface.dependencies.append(impl)
             implementations[interface] = impl
 
         for task in to_add: self.addTask(task)
@@ -338,14 +366,17 @@ class Scheduler(object):
 
         return forward, reverse
 
-    def _runTask(self, task, context, forceRedo):
+    def _runTask(self, task, context, forceRedo, recomputed):
         context.log("Starting task: {0}", task.name)
-        if forceRedo or not task.isComplete():
+        if forceRedo \
+                or task.__class__ in self._redos \
+                or any(dep in recomputed for dep in task.dependencies) \
+                or not task.isComplete():
             task.run()
+            recomputed.add(task.__class__)
         else:
             context.log("Already complete.")
         context.log("Finished task: {0}", task.name)
-        
 
     def _resolveExports(self, task, context, remaining):
         def stillNeeded(taskClass):

@@ -44,9 +44,9 @@ class GridParticles(scaffold.Task):
         cellMap, cellCenters = self._buildCellMap(numGridCells)
         cells = self._assignCells(tracks, cellMap)
         
-        self.context.createArray(self._cellMapPath, cellMap)
-        self.context.createArray(self._cellCentersPath, cellCenters)
-        self.context.createArray(self._cellsPath, cells)
+        self.context.createChunkArray(self._cellMapPath, cellMap)
+        self.context.createChunkArray(self._cellCentersPath, cellCenters)
+        self.context.createChunkArray(self._cellsPath, cells)
         self.context.flush()
 
     def _loadCellSize(self):
@@ -67,7 +67,7 @@ class GridParticles(scaffold.Task):
         return cellMap, np.array(cellCenters, float)
         
     def _assignCells(self, tracks, cellMap):
-        cells = np.empty((tracks.nrows, 1), dtype="int")
+        cells = np.empty((tracks.nrows, 1), np.uint32)
         for row, track in enumerate(tracks):
             i, j = track['position'] // self._cellSize
             cells[row] = int(cellMap[_index(i), _index(j)])
@@ -87,6 +87,7 @@ class CalculateByTime(scaffold.Task):
     _tablePath = None
 
     def isComplete(self):
+        print self.name + str(self.context.hasNode(self._tablePath))
         return self.context.hasNode(self._tablePath)
 
     def export(self):
@@ -186,7 +187,7 @@ class NormalizeVelocities(scaffold.Task):
         normalized = np.zeros_like(velocities)
         normalized[nonzero, :] = velocities[nonzero, :]\
                                  /magnitudes[nonzero][:, np.newaxis]
-        self.context.createArray("normalizedVelocities", normalized)
+        self.context.createChunkArray("normalizedVelocities", normalized)
 
 
 class CalculateDirectors(scaffold.Task):
@@ -204,7 +205,7 @@ class CalculateDirectors(scaffold.Task):
         tracks = self._import(particles.TrackParticles, "tracks")
         angles = tracks.col('angle')
         directors = np.vstack([np.cos(angles), np.sin(angles)]).T
-        self.context.createArray("directors", directors)
+        self.context.createChunkArray("directors", directors)
 
 
 class CalculateDensityField(GriddedField):
@@ -297,6 +298,7 @@ class ComputeCircleAreas(scaffold.Task):
 
     def run(self):
         self._radii = self._param(RADII)
+        self.context.createArray("_circleAreasRadii", self._radii)
         self._loadShape()
 
         self._makeTable()
