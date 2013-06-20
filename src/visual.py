@@ -23,16 +23,13 @@ class _RenderTask(scaffold.Task):
         if self._outputParam is None: raise NotImplemented
         output = _formatOutput(self, self._outputParam)
 
-        if isinstance(images, list):
-            seq = im.ImageSeq(map(mapping, images))
-        else:
-            seq = im.ImageSeq([mapping(row['image']) for row in images])
+        seq = im.ImageSeq(map(mapping, images))
         seq.writeMovie(output)
         self.context.log("Rendered to {0}.", output)
 
 
-RENDER_MASKS_OUTPUT = scaffold.registerParameter("renderMasksOutput", "../videos/{0}-masks.avi",
-"""The file path to render the output video of RenderForegroundMasks to.""")
+RENDER_MASKS_OUTPUT = scaffold.registerParameter("renderMasksOutput", "../videos/{0}-masks.avi")
+"""The file path to render the output video of RenderForegroundMasks to."""
 
 class RenderForegroundMasks(_RenderTask):
 
@@ -44,8 +41,8 @@ class RenderForegroundMasks(_RenderTask):
         images = self._import(im.ComputeForegroundMasks, "masks")
         self._render(images, im.binaryToGray)
 
-RENDER_DIFFS_OUTPUT = scaffold.registerParameter("renderDiffsOutput", "../videos/{0}-diffs.avi",
-"""The file path to render the output video of RenderDifferences to.""")
+RENDER_DIFFS_OUTPUT = scaffold.registerParameter("renderDiffsOutput", "../videos/{0}-diffs.avi")
+"""The file path to render the output video of RenderDifferences to."""
 
 class RenderDifferences(_RenderTask):
 
@@ -60,8 +57,8 @@ class RenderDifferences(_RenderTask):
         self._render(diffs, mapping)
 
 
-RENDER_REMOVED_BACKGROUND_OUTPUT = scaffold.registerParameter("renderRemovedBackgroundOutput", "../videos/{0}-removedBackground.avi",
-"""The file path to render the output video of RenderRemovedBackground to.""")
+RENDER_REMOVED_BACKGROUND_OUTPUT = scaffold.registerParameter("renderRemovedBackgroundOutput", "../videos/{0}-removedBackground.avi")
+"""The file path to render the output video of RenderRemovedBackground to."""
 
 class RenderRemovedBackground(_RenderTask):
 
@@ -74,8 +71,8 @@ class RenderRemovedBackground(_RenderTask):
         self._render(images)
 
 
-RENDER_SEED_IMAGES_OUTPUT = scaffold.registerParameter("renderSeedImagesOutput", "../videos/{0}-seedImages.avi",
-"""The file path to render the output video of RenderSeedImages to.""")
+RENDER_SEED_IMAGES_OUTPUT = scaffold.registerParameter("renderSeedImagesOutput", "../videos/{0}-seedImages.avi")
+"""The file path to render the output video of RenderSeedImages to."""
 
 class RenderSeedImages(_RenderTask):
 
@@ -85,10 +82,10 @@ class RenderSeedImages(_RenderTask):
 
     def run(self):
         images = self._import(pt.FindParticlesViaEdges, "seedImages")
-        self._render(images)
+        self._render(images, im.binaryToGray)
 
-RENDER_WATERSHED_OUTPUT = scaffold.registerParameter("renderWatershedOutput", "../videos/{0}-watershed.avi",
-"""The file path to render the output video of RenderWatershed to.""")
+RENDER_WATERSHED_OUTPUT = scaffold.registerParameter("renderWatershedOutput", "../videos/{0}-watershed.avi")
+"""The file path to render the output video of RenderWatershed to."""
 
 class RenderWatershed(_RenderTask):
 
@@ -101,8 +98,8 @@ class RenderWatershed(_RenderTask):
         self._render(images)
 
 
-RENDER_REGIONS_OUTPUT = scaffold.registerParameter("renderRegionsOutput", "../videos/{0}-regions.avi",
-"""The file path to render the output video of RenderRegions to.""")
+RENDER_REGIONS_OUTPUT = scaffold.registerParameter("renderRegionsOutput", "../videos/{0}-regions.avi")
+"""The file path to render the output video of RenderRegions to."""
 
 class RenderRegions(_RenderTask):
 
@@ -114,8 +111,8 @@ class RenderRegions(_RenderTask):
         images = self._import(im.MergeStatisticalRegions, "masks")
         self._render(images, im.binaryToGray)
 
-RENDER_MORPHED_IMAGES_OUTPUT = scaffold.registerParameter("renderMorphedImagesOutput", "../videos/{0}-morphImages.avi",
-"""The file path to render the output video of RenderMorphImages to.""")
+RENDER_MORPHED_IMAGES_OUTPUT = scaffold.registerParameter("renderMorphedImagesOutput", "../videos/{0}-morphImages.avi")
+"""The file path to render the output video of RenderMorphImages to."""
 
 class RenderMorphImages(_RenderTask):
 
@@ -127,10 +124,10 @@ class RenderMorphImages(_RenderTask):
         images = self._import(pt.FindParticlesViaMorph, "images")
         self._render(images)
 
-RENDER_ELLIPSES_OUTPUT = scaffold.registerParameter("renderEllipsesOutput", "../videos/{0}-ellipses.avi",
-"""The file path to render the output video of RenderEllipses to.""")
-RENDER_ELLIPSES_COLOR = scaffold.registerParameter("renderEllipsesColor", (0, 0, 255),
-"""The RGB color used to draw the ellipses.""")
+RENDER_ELLIPSES_OUTPUT = scaffold.registerParameter("renderEllipsesOutput", "../videos/{0}-ellipses.avi")
+"""The file path to render the output video of RenderEllipses to."""
+RENDER_ELLIPSES_COLOR = scaffold.registerParameter("renderEllipsesColor", (0, 0, 255))
+"""The RGB color used to draw the ellipses."""
 
 class RenderEllipses(_RenderTask):
 
@@ -214,8 +211,8 @@ class _PlotField(_AnimationTask):
     def _getTable(self): raise NotImplemented
 
 
-PLOT_VELOCITY_FIELD_OUTPUT = scaffold.registerParameter("plotVelocityFieldOutput", "../plots/{0}-velocityField.avi",
-"""The file path to render the output animation of PlotVelocityField to.""")
+PLOT_VELOCITY_FIELD_OUTPUT = scaffold.registerParameter("plotVelocityFieldOutput", "../plots/{0}-velocityField.avi")
+"""The file path to render the output animation of PlotVelocityField to."""
 
 class PlotVelocityField(_PlotField):
 
@@ -227,8 +224,8 @@ class PlotVelocityField(_PlotField):
     def _getTable(self): return self._import(an.CalculateVelocityField, "field")
 
 
-PLOT_DENSITY_FIELD_OUTPUT = scaffold.registerParameter("plotDensityFieldOutput", "../plots/{0}-densityField.avi",
-"""The file path to render the output animation of PlotDensityField to.""")
+PLOT_DENSITY_FIELD_OUTPUT = scaffold.registerParameter("plotDensityFieldOutput", "../plots/{0}-densityField.avi")
+"""The file path to render the output animation of PlotDensityField to."""
 
 class PlotDensityField(_PlotField):
 
@@ -259,8 +256,8 @@ class _PlotCorrelation(scaffold.Task):
         plt.savefig(output, dpi=600)
 
 
-PLOT_PARTICLE_DISTANCE_OUTPUT = scaffold.registerParameter("plotParticleDistanceOutput", "../plots/{0}-particleDistance.png",
-"""The file path to render the output plot of PlotParticleDistance to.""")
+PLOT_PARTICLE_DISTANCE_OUTPUT = scaffold.registerParameter("plotParticleDistanceOutput", "../plots/{0}-particleDistance.png")
+"""The file path to render the output plot of PlotParticleDistance to."""
 
 class PlotParticleDistance(_PlotCorrelation):
 

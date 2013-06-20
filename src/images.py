@@ -1,6 +1,10 @@
 #!/usr/bin/env 
 """
 Contains tasks and classes for loading/manipulating an image sequence.
+
+:Author: Chase Kernan
+:Contact: chase.kernan@gmail.com
+:Created: August 12, 2012
 """
 
 import scaffold
@@ -13,22 +17,45 @@ import numpy as np
 import _regions
 import tables as tb
 
-CONFIG_FILE = scaffold.registerParameter("configFile", "", 
-"""The location of the configuration file for this image series.""")
+__all__ = ['CONFIG_FILE', 'LOCAL_GROUP_PREFIX',
+           'ExtractUniqueId',
+           'ParseConfig',
+           'createImageTable',
+           'LoadImages',
+           'ComputeForegroundMasks'
+           'MASK_LOW_THRESH', 'MASK_HIGH_THRESH']
 
-LOCAL_GROUP_PREFIX = scaffold.registerParameter("localGroupPrefix", "/data",
-"""The prefix used for all paths inside of the h5 file for this particular 
-image batch.""")
+CONFIG_FILE = scaffold.registerParameter("configFile", "")
+"""
+The location of the configuration file for this image series.
+
+It should point to a _Properties.xml file.
+"""
+
+LOCAL_GROUP_PREFIX = scaffold.registerParameter("localGroupPrefix", "/data")
+"""The prefix used for paths inside of the h5 file for this image sequence."""
 
 class ExtractUniqueId(scaffold.Task):
+    """
+    Extracts a unique ID from the configuration file. The ID is currently a 
+    combination of the start date and time.
+    """
 
     dependencies = []
     name = "Extract Unique ID"
 
     def export(self):
+        """Exports ``id``, which is a unique string identifier.
+
+        ``id`` is currently ```'MMDDYYYY_HHMMSSMMM'```
+        """
         return dict(id=self._id)
 
     def run(self):
+        """Parses the config fill, creates an id, and updates the h5 context.
+
+        The context h5 root is set to ```'PREFIX/ID'```.
+        """
         xml = minidom.parse(self._param(CONFIG_FILE))
         time = str(xml.getElementsByTagName('StartTime')[0].firstChild.data)
         self._id = "run" + time.translate(None, '/:.').replace(' ', '_')
@@ -50,17 +77,44 @@ _propertiesFile = re.compile(r"Series[0-9]+_Properties\.xml")
 class ParseConfig(scaffold.Task):
     """
     Parses a configuration file to extract information about an image sequence
-    and dumps that information into data.attrs and an imagePaths array.
-
-    (Currently parses a _Properties.xml file).
+    and dumps that information into the h5 root attrs and an imagePaths array.
     """
 
     dependencies = []
     name = "Parse Configuration"
 
+    def export(self):
+        """Exports ``info`` attrs and the ``imagePaths`` array.
+
+        ``info`` contains the following:
+            folder
+                The file system folder containing the image series
+            name
+                The name of the image sequence as assigned by instrumentation
+            seriesNum
+                The series number as an integer
+            length
+                The number of images in the sequence
+            pixel
+                The real size of a single pixel, in microns
+            shape
+                The shape of the numpy array used to represent the image
+            duration
+                The time duration of the sequence, in seconds, as a float
+            timeStart
+                A time-formatted string of the starting date and time
+            dt
+                The time interval covered by a sing frame
+            imageSize
+                The total size of each image, in microns
+            channel
+                The channel being recorded on (TODO: always 0)
+
+        """
+        return dict(info=self.context.attrs, 
+                    imagePaths=self.context.node("imagePaths"))
+
     def isComplete(self):
-        # for now we'll just assume if theres already a list of image paths 
-        # that we've already loaded config information.
         return self.context.hasNode("imagePaths")
 
     def run(self):
@@ -94,31 +148,37 @@ class ParseConfig(scaffold.Task):
         self.context.createArray("imagePaths", [imagePath(num) for num in imageNums])
         self.context.flush()
 
-    def export(self):
-        return dict(info=self.context.attrs, 
-                    imagePaths=self.context.node("imagePaths"))
 
+def createImageArray(task, name, baseImage=None, dtype=np.uint8, shape=None, 
+                     **kwargs):
+    """Creates an enlargeable array of images with the given name.
 
-def createImageTable(task, path, images, **kwargs):
-    kwargs.setdefault('filters', tb.Filters(complevel=9, complib='zlib'))
-    kwargs.setdefault('expectedrows', len(images))
+    Must either specify ``baseImage`` or both ``dtype`` and ``shape``.
+    If ``baseImage`` is given, then this will create an array of the same type
+    and shape.
 
-    col = tb.Col.from_dtype(images[0].dtype)
-    class ImageTable(tb.IsDescription):
-        image = col.__class__(shape=images[0].shape)
-    table = task.context.createTable(path, ImageTable, **kwargs)
+    If the final number of images is known, it should be passed in as 
+    ``expectedrows``, otherwise it is guessed to be 500 images long.
 
-    for image in images:
-        table.row['image'] = image
-        table.row.append()
-    table.flush()
-    return table
+    The remainder of the arguments are passed to 
+    ``context.createEnlargeableArray``.
+
+    Returns the created array.
+    """
+    kwargs.setdefault('filters', tb.Filters(complevel=5, complib='zlib'))
+    kwargs.setdefault('expectedrows', 500)
+
+    if baseImage is not None:
+        dtype = baseImage.dtype
+        shape = baseImage.shape
+
+    atom = tb.Atom.from_dtype(np.dtype((dtype, tuple(shape))))
+    return task.context.createEnlargeableArray(name, atom, (0,), **kwargs)
 
 
 class LoadImages(scaffold.Task):
     """
-    Takes the config information for an image sequence and loads the actual
-    images into an ImageSeq inside of data.cache[OriginalImages].
+    Loads the image sequence described in the config file into an array.
     """
 
     dependencies = [ParseConfig]
@@ -128,24 +188,39 @@ class LoadImages(scaffold.Task):
         return self.context.hasNode("images")
 
     def export(self):
+        """Exports the ``images`` array.
+
+        ``images`` contains one uint8 NxM array for each image.
+        """
         return dict(images=self.context.node("images"))
 
     def run(self):
         paths = self._import(ParseConfig, "imagePaths")
         info = self._import(ParseConfig, "info")
-        createImageTable(self, "images", LazyImageSeq(paths))
+        images = createImageArray(self, "images", 
+                                  dtype=np.uint8, shape=info.shape,
+                                  expectedrows=len(paths))
+        for image in LazyImageSeq(paths): 
+            images.append([image])
+        images.flush()
 
 
 class ComputeForegroundMasks(scaffold.TaskInterface):
+    """The interface implemented by all tasks that isolate the foreground.
+
+    ``masks`` should be an array of binary NxM matrices.
+    """ 
     name = "Compute Foreground Masks"
     willExport = ['masks']
 
-MASK_LOW_THRESH = scaffold.registerParameter("maskLowThresh", -10.0, #-1.3
+
+MASK_LOW_THRESH = scaffold.registerParameter("maskLowThresh", -10.0) #-1.3
 """The difference from the mean pixel value (in mean differences) below which a 
-pixel will be marked as in the foreground.""")
-MASK_HIGH_THRESH = scaffold.registerParameter("maskHighThresh", 3.0, #1.0
+pixel will be marked as in the foreground."""
+
+MASK_HIGH_THRESH = scaffold.registerParameter("maskHighThresh", 3.0) #1.0
 """The difference from the mean pixel value (in mean differences) above which a 
-pixel will be marked as in the foreground.""")
+pixel will be marked as in the foreground."""
 
 class ComputeDifferenceMasks(scaffold.Task):
     """
@@ -160,19 +235,25 @@ class ComputeDifferenceMasks(scaffold.Task):
         return self.context.hasNode("differenceMasks")
 
     def export(self):
+        """Exports the ``masks`` and ``diffs`` arrays.
+
+        ``masks`` is an array of binary NxM matrices.
+        ``diffs`` is an array of float32 NxM matrices containing the 
+        difference from the mean for each pixel measured in std. deviations 
+        (for debugging purposes).
+        """
         return dict(masks=self.context.node("differenceMasks"),
                     diffs=self.context.node("differences"))
 
     def run(self):
         self._images = self._import(LoadImages, "images")
-        self._imageSize = self._images[0].shape
+        self._shape = self._images[0].shape
         self._lowThresh = self._param(MASK_LOW_THRESH)
         self._highThresh = self._param(MASK_HIGH_THRESH)
         
         self._computeAverageDiff()
         self._computeMasks()
         self._computeDiffs()
-        self._makeTables()
 
     def _computeAverageDiff(self):
         """Compute the mean and mean difference of each pixel in an image seq.
@@ -185,13 +266,13 @@ class ComputeDifferenceMasks(scaffold.Task):
         """
         # loop through all of the images and simultaneously compute the sum
         # and the sum of differences for each pixel
-        average     = self._images[0]['image'].astype(np.float32)
+        average     = self._images[0].astype(np.float32)
         # add 0.01 to avoid a zero divide
-        averageDiff = 0.01 + np.zeros(self._imageSize, dtype=np.float32)
-        previous    = self._images[0]['image'].astype(np.float32)
+        averageDiff = 0.01 + np.zeros(self._shape, np.float32)
+        previous    = self._images[0].astype(np.float32)
         
         for image in self._images[1:]:
-            image = image['image'].astype(np.float32)
+            image = image.astype(np.float32)
 
             average += image
             averageDiff += np.abs(image - previous)
@@ -219,30 +300,40 @@ class ComputeDifferenceMasks(scaffold.Task):
         highThresh = self._makeThresholdImage(self._highThresh)
         lowThresh = self._makeThresholdImage(self._lowThresh)
         
-        self._masks = [(image < lowThresh) | (image > highThresh)
-                       for image in self._images]
+        masks = createImageArray(self, "differenceMasks", 
+                                 dtype=np.bool, 
+                                 shape=self._shape,
+                                 expectedrows=len(self._images))
+        for image in self._images:
+            masks.append([(image < lowThresh) | (image > highThresh)])
+        masks.flush()
 
     def _computeDiffs(self):
         """
         Compute the difference from the mean (in std. dev. units).
         """
-        self._diffs = [(row['image'] - self._average)/self._averageDiff
-                       for row in self._images]
+        diffs = createImageArray(self, "differences", 
+                                 dtype=np.float32, 
+                                 shape=self._shape, 
+                                 expectedrows=len(self._images))
+        for image in self._images:
+            diffs.append([(image - self._average)/self._averageDiff])
+        diffs.flush()
 
-    def _makeTables(self):
-        createImageTable(self, "differenceMasks", self._masks)
-        createImageTable(self, "differences", self._diffs)
-
-
+# Difference masks are one way to identify the foreground
 scaffold.implements(ComputeDifferenceMasks, ComputeForegroundMasks, 
                     default=True)
 
 
-FEATURE_RADIUS = scaffold.registerParameter("featureRadius", 5,
+FEATURE_RADIUS = scaffold.registerParameter("featureRadius", 5)
 """The radius (in pixels) of the feature we are trying to identify. Used in the 
-tophat morphological procedure.""")
+tophat morphological procedure."""
 
 class RemoveBackground(scaffold.Task):
+    """
+    Remove background patterns (like microscopy artifacts) using the tophat 
+    morphological procedure.
+    """
 
     name = "Remove Background"
     dependencies = [LoadImages]
@@ -251,6 +342,7 @@ class RemoveBackground(scaffold.Task):
         return self.context.hasNode("lessBackground")
 
     def export(self):
+        """Exports the ``images`` array."""
         return dict(images=self.context.node("lessBackground"))
 
     def run(self):
@@ -258,16 +350,25 @@ class RemoveBackground(scaffold.Task):
         featureRadius = self._param(FEATURE_RADIUS)
         tophatKernel = makeCircularKernel(featureRadius)
 
-        lessBackground = []
-        for row in images:
-            scaled = forceRange(row['image'], 0, 255)
+        lessBackground = createImageArray(self, "lessBackground", 
+                                          dtype=np.uint8, 
+                                          shape=images[0].shape, 
+                                          expectedrows=len(images))
+        for image in images:
+            scaled = forceRange(image, 0, 255)
             tophat = cv2.morphologyEx(scaled, cv2.MORPH_TOPHAT, tophatKernel)
-            lessBackground.append(tophat)
-        
-        createImageTable(self, "lessBackground", lessBackground)
+            lessBackground.append([tophat])
+        lessBackground.flush()
 
+WATERSHED_THRESHOLD = scaffold.registerParameter("watershedThreshold", 24)
+"""Before the watershed processing, the images are thresholded using this 
+value."""
 
 class Watershed(scaffold.Task):
+    """
+    Identifies foreground groups in the image seq using the watershed 
+    algorithm. See http://en.wikipedia.org/wiki/Watershed_(image_processing)
+    """
 
     name = "Watershed"
     dependencies = [RemoveBackground]
@@ -276,6 +377,12 @@ class Watershed(scaffold.Task):
         return self.context.hasNode("watershedRegions")
 
     def export(self):
+        """Exports the ``regions`` and ``isolated`` image sequences.
+
+        ``regions`` contains images corresponding to the foreground contours.
+        ``isolated`` contains the original image data, except where where 
+        ``regions`` marks background, in which case it is 0.
+        """
         return dict(regions=self.context.node("watershedRegions"),
                     isolated=self.context.node("watershedIsolated"))
 
@@ -283,14 +390,19 @@ class Watershed(scaffold.Task):
         images = self._import(RemoveBackground, "images")
         erodeKernel = makeCircularKernel(2)
         dilateKernel = makeCircularKernel(2)
+        threshold = self._param(WATERSHED_THRESHOLD)
 
-        regions = []
-        isolated = []
-        thresholds = []
-        for row in images:
+        regions = createImageArray(self, "watershedRegions",
+                                   dtype=np.int32,
+                                   shape=images[0].shape,
+                                   expectedrows=len(images))
+        isolated = createImageArray(self, "watershedIsolated",
+                                   dtype=np.bool,
+                                   shape=images[0].shape,
+                                   expectedrows=len(images))
+        for image in images:
             #threshold, binary = cv2.threshold(image, 128, 255, cv2.THRESH_BINARY|cv2.THRESH_OTSU)
-            threshold, binary = cv2.threshold(row['image'], 24, 255, cv2.THRESH_BINARY)
-            thresholds.append(threshold)
+            _, binary = cv2.threshold(image, threshold, 255, cv2.THRESH_BINARY)
 
             # definitely background = 1, unsure = 0
             # rest are individually numbered particles
@@ -308,26 +420,28 @@ class Watershed(scaffold.Task):
             cv2.drawContours(foreground, contours, -1, 2)
 
             markers = foreground + background
-            cv2.watershed(toColor(row['image']), markers)
+            cv2.watershed(toColor(image), markers)
 
-            regions.append(markers)
+            regions.append([markers])
 
-            select = row['image'].copy()
+            select = image.copy()
             select[markers != 2] = 0
-            isolated.append(select)
+            isolated.append([select])
 
-        self.context.debug("Mean threshold = {0}", sum(thresholds)/len(thresholds))
-        createImageTable(self, "watershedRegions", regions)
-        createImageTable(self, "watershedIsolated", isolated)
+        regions.flush()
+        isolated.flush()
 
 
-REGION_SEGMENTATION = scaffold.registerParameter("regionSegmentation", 150.0,
-"""Insert description here.""")
-REGION_THRESHOLD = scaffold.registerParameter("regionThreshold", 10,
-"""The minimum threshold applied to the region-average image.""")
+REGION_SEGMENTATION = scaffold.registerParameter("regionSegmentation", 150.0)
+"""Segmentation parameter for Fiji merge statistical regions algorithm."""
+REGION_THRESHOLD = scaffold.registerParameter("regionThreshold", 10)
+"""The minimum threshold applied to the region-average image."""
 
 class MergeStatisticalRegions(scaffold.Task):
-
+    """
+    Creates a foregound masks sequence using the merge statistical regions
+    algorithm (implementation based on Fiji suite).
+    """
     name = "Merge Statistical Regions"
     dependencies = [RemoveBackground]
     #dependencies = [ComputeForegroundMasks]
@@ -336,6 +450,7 @@ class MergeStatisticalRegions(scaffold.Task):
         return self.context.hasNode("statisticalRegionsMasks")
 
     def export(self):
+        """Exports the binary ``masks`` and the ``grouped`` group IDs."""
         return dict(masks=self.context.node("statisticalRegionsMasks"), 
                     grouped=self.context.node("statisticalRegionsGrouped"))
 
@@ -346,18 +461,24 @@ class MergeStatisticalRegions(scaffold.Task):
         segParam = self._param(REGION_SEGMENTATION)
         threshold = self._param(REGION_THRESHOLD)
 
-        masks = []
-        groupedByRegions = []
 
-        for row in images:
-            image = cv2.GaussianBlur(row['image'], (0, 0), 1.0)
+        masks = createImageArray(self, "statisticalRegionsMasks",
+                                 dtype=np.bool, shape=images[0].shape,
+                                 expectedrows=len(images))
+        groupedByRegions = createImageArray(self, "statisticalRegionsGrouped",
+                                            dtype=np.int32,
+                                            expectedrows=len(images))
+
+        for image in images:
+            image = cv2.GaussianBlur(image, (0, 0), 1.0)
             numRegions, average, regions = \
                     _regions.mergeStatisticalRegions(image, segParam)
-            masks.append(average > threshold)
-            groupedByRegions.append(regions)
-        
-        createImageTable(self, "statisticalRegionsMasks", masks)
-        createImageTable(self, "statisticalRegionsGrouped", groupedByRegions)
+            masks.append([average > threshold])
+            groupedByRegions.append([regions])
+
+        masks.flush()
+        groupedByRegions.flush()
+
 scaffold.implements(MergeStatisticalRegions, ComputeForegroundMasks)
 
 

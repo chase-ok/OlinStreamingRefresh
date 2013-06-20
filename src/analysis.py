@@ -10,8 +10,8 @@ import images
 import scaffold
 import particles
 
-NUM_GRID_CELLS = scaffold.registerParameter("numGridCells", [20, 20],
-"""The number of rows and columns in the particle grid.""")
+NUM_GRID_CELLS = scaffold.registerParameter("numGridCells", [20, 20])
+"""The number of rows and columns in the particle grid."""
 
 def _griddedPath(task, path):
     return "{0}{1}_{2}".format(path, *task._param(NUM_GRID_CELLS))
@@ -87,7 +87,6 @@ class CalculateByTime(scaffold.Task):
     _tablePath = None
 
     def isComplete(self):
-        print self.name + str(self.context.hasNode(self._tablePath))
         return self.context.hasNode(self._tablePath)
 
     def export(self):
@@ -273,8 +272,8 @@ class CalculateLocalVelocityCorrelationField(GriddedField):
         return total/(n*(n-1)/2) 
 
 
-RADII = scaffold.registerParameter("radii", np.arange(1.0, 15, 1),
-"""The successive radii to calculate correlations at.""")
+RADII = scaffold.registerParameter("radii", np.arange(1.0, 15, 1))
+"""The successive radii to calculate correlations at."""
 
 class ComputeCircleAreas(scaffold.Task):
 

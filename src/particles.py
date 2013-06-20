@@ -15,25 +15,27 @@ from trackpy import tracking
 
 from matplotlib import pyplot as plt
 
-ELLIPSE_MIN_AREA = scaffold.registerParameter("ellipseMinArea", 4.0,
-"""The minimum area required to identify an ellipse.""")
-ELLIPSE_MAX_AREA = scaffold.registerParameter("ellipseMaxArea", 200.0,
-"""The maximum area required to identify an ellipse.""")
-EXPECTED_ELLIPSES_PER_FRAME = scaffold.registerParameter("expectedEllipsesPerFrame", 200,
+ELLIPSE_MIN_AREA = scaffold.registerParameter("ellipseMinArea", 4.0)
+"""The minimum area required to identify an ellipse."""
+ELLIPSE_MAX_AREA = scaffold.registerParameter("ellipseMaxArea", 200.0)
+"""The maximum area required to identify an ellipse."""
+EXPECTED_ELLIPSES_PER_FRAME = scaffold.registerParameter("expectedEllipsesPerFrame", 200)
 """The mean number of ellipses we expect to find. It's used to optimize memory
-allocation.""")
-
-ELLIPSE_TABLE_PATH = "ellipses"
+allocation."""
 
 class ParticleFinder(scaffold.Task):
     """Base class for all of the different ways to find particles."""
 
     def _findEllipsesViaContours(self, masks):
+        """Dumps the ellipses found in ``masks`` into the ellipse table.
+
+        ``masks`` should be an iterable of binary images.
+        """
         minArea = self._param(ELLIPSE_MIN_AREA)
         maxArea = self._param(ELLIPSE_MAX_AREA)
         expectedPerFrame = self._param(EXPECTED_ELLIPSES_PER_FRAME)
         
-        table = self.context.createTable(ELLIPSE_TABLE_PATH, EllipseTable,
+        table = self.context.createTable("ellipses", EllipseTable,
                                          expectedrows=expectedPerFrame*len(masks))
         ellipse = table.row # shortcut
 
@@ -68,25 +70,24 @@ class FindParticlesViaMasks(ParticleFinder):
     dependencies = [im.ParseConfig, im.ComputeForegroundMasks]
 
     def isComplete(self):
-        return self.context.hasNode(ELLIPSE_TABLE_PATH)
+        return self.context.hasNode("ellipses")
 
     def run(self):
-        masks = [row['image'] for row in 
-                 self._import(im.ComputeForegroundMasks, "masks")]
+        masks = self._import(im.ComputeForegroundMasks, "masks")
         self._findEllipsesViaContours(masks)
 
     def export(self):
         return dict(ellipses=self.context.node(ELLIPSE_TABLE_PATH))
 
 
-DILATION_RADIUS = scaffold.registerParameter("dilationRadius", 3,
-"""Amount (in pixels) to dilate each image.""")
-MORPH_THRESHOLD = scaffold.registerParameter("morphThreshold", 0.2,
-"""Threshold for pixel values (0-1) after morphological procedures.""")
-BLUR_SIGMA = scaffold.registerParameter("blurSigma", 2.0,
-"""The std. dev. (in pixels) for the gaussian blur.""")
-EXP_THRESHOLD = scaffold.registerParameter("expThreshold", 0.0001,
-"""Threshold for pixel values after final dilation.""")
+DILATION_RADIUS = scaffold.registerParameter("dilationRadius", 3)
+"""Amount (in pixels) to dilate each image."""
+MORPH_THRESHOLD = scaffold.registerParameter("morphThreshold", 0.2)
+"""Threshold for pixel values (0-1) after morphological procedures."""
+BLUR_SIGMA = scaffold.registerParameter("blurSigma", 2.0)
+"""The std. dev. (in pixels) for the gaussian blur."""
+EXP_THRESHOLD = scaffold.registerParameter("expThreshold", 0.0001)
+"""Threshold for pixel values after final dilation."""
 
 class FindParticlesViaMorph(ParticleFinder):
     """
@@ -129,8 +130,8 @@ class FindParticlesViaMorph(ParticleFinder):
         tophatKernel = im.makeCircularKernel(self._featureRadius)
 
         morphed = []
-        for row in self._images:
-            scaled = im.forceRange(row['image'], 0.0, 1.0) # scale pixel values to 0-1
+        for image in self._images:
+            scaled = im.forceRange(image, 0.0, 1.0) # scale pixel values to 0-1
             blurred = cv2.GaussianBlur(scaled, (0, 0), self._blurSigma)
             tophat = cv2.morphologyEx(blurred, cv2.MORPH_TOPHAT, tophatKernel)
             # maximize contrast by forcing the range to be 0-1 again
@@ -142,7 +143,10 @@ class FindParticlesViaMorph(ParticleFinder):
         """Find the centers of particles by thresholding and dilating."""
         dilationKernel = im.makeCircularKernel(self._dilationRadius)
 
-        maxed = []
+        self._maxed = im.createImageArray(self, "morphMax",
+                                          dtype=np.bool,
+                                          shape = self._morphed[0].shape,
+                                          expectedrows=len(self._morphed))
         for image in self._morphed:
             # set pixels below morph thresh to 0
             threshed = stats.threshold(image, self._morphThreshold, newval=0.0)
@@ -151,8 +155,8 @@ class FindParticlesViaMorph(ParticleFinder):
             # originally exponentiated and then thresholded, which is the same
             # as flipping the sign and exponentiating the threshold.
             binary = (dilated - threshed) >= self._expThreshold
-            maxed.append(binary)
-        self._maxed = maxed
+            self._maxed.append([binary])
+        self._maxed.flush()
 
 # An HDF5 table for storing identified ellipses
 class EllipseTable(tb.IsDescription):
@@ -186,24 +190,30 @@ class Particle(object):
                                   degreeDelta)
         cv2.fillConvexPoly(canvas, points, color, cv2.CV_AA)
 
-PARTICLE_AXES = scaffold.registerParameter("particleAxes", [6.0, 1.5],
-"""The default assumed axes for elliptical particles.""")
+PARTICLE_AXES = scaffold.registerParameter("particleAxes", [6.0, 1.5])
+"""The default assumed axes for elliptical particles."""
 
-EDGE_THRESHOLD = scaffold.registerParameter("edgeThreshold", 200,
+EDGE_THRESHOLD = scaffold.registerParameter("edgeThreshold", 200)
 """The minimum pixel value for the Sobel edge computation in particle
-seeding.""")
+seeding."""
 
-FRAGMENT_ANGLE_MAX = scaffold.registerParameter("fragmentAngleMax", math.pi/6,
+FRAGMENT_ANGLE_MAX = scaffold.registerParameter("fragmentAngleMax", math.pi/6)
 """The maximum angle difference between two fragments for them to be considered
-to be from the same particle.""")
+to be from the same particle."""
 
-FRAGMENT_DISTANCE_MAX = scaffold.registerParameter("fragmentDistanceMax", 2,
+FRAGMENT_DISTANCE_MAX = scaffold.registerParameter("fragmentDistanceMax", 2)
 """The maximum distance between two fragments for them to be considered
-to be from the same particle.""")
+to be from the same particle."""
 
-FRAGMENT_AREA_MAX = scaffold.registerParameter("fragmentAreaMax", 0.25,
+FRAGMENT_AREA_MAX = scaffold.registerParameter("fragmentAreaMax", 0.25)
 """The maximum relative area difference between two fragments for them to be
-considered to be from the same particle.""")
+considered to be from the same particle."""
+PARTICLE_TOO_SMALL = scaffold.registerParameter("particleTooSmall", 0.5)
+"""Reject the particle as probably noise if its area is below this value."""
+PARTICLE_FRAGMENT = scaffold.registerParameter("particleFragment", 5)
+"""Probably a fragment of a particle if the area is below this value."""
+CONJOINED_PARTICLES = scaffold.registerParameter("conjoinedParticles", 25)
+"""Probably conjoined particles if the area is above this value."""
 
 class FindParticlesViaEdges(scaffold.Task):
 
@@ -211,10 +221,10 @@ class FindParticlesViaEdges(scaffold.Task):
     dependencies = [im.ParseConfig, im.RemoveBackground]
 
     def isComplete(self):
-        return self.context.hasNode("ellipses_")
+        return self.context.hasNode("ellipsesViaEdges")
 
     def export(self):
-        return dict(ellipses=self.context.node("ellipses_"),
+        return dict(ellipses=self.context.node("ellipsesViaEdges"),
                     seedImages=self.context.node("edgesSeedImages"))
 
     def run(self):
@@ -222,14 +232,20 @@ class FindParticlesViaEdges(scaffold.Task):
         self._seedImages = [] #debug
 
         perFrame = self._param(EXPECTED_ELLIPSES_PER_FRAME)
-        self._table = self.context.createTable("ellipses_", EllipseTable,
+        self._table = self.context.createTable("ellipsesViaEdges", EllipseTable,
                                                expectedrows=perFrame*images.nrows)
-        for i, row in enumerate(images.iterrows()):
-            particles = self._seedParticles(row['image'])
-            particles = self._refineParticles(particles, row['image'])
+        self._seedImages = im.createImageArray(self, "edgesSeedImages",
+                                               dtype=np.bool, 
+                                               shape=images[0].shape,
+                                               expectedrows=len(images))
+
+        for i, image in enumerate(images):
+            particles = self._seedParticles(image)
+            particles = self._refineParticles(particles, image)
             self._render(i, particles)
+
         self._table.flush()
-        im.createImageTable(self, "edgesSeedImages", self._seedImages)
+        self._seedImages.flush()
 
     def _seedParticles(self, image):
         #compute edges
@@ -248,7 +264,7 @@ class FindParticlesViaEdges(scaffold.Task):
         seedImage[speckles] = 0
 
         #debug
-        self._seedImages.append(seedImage*255)
+        self._seedImages.append([seedImage])
 
         contours, _ = cv2.findContours(seedImage, 
                                        cv2.RETR_LIST, 
@@ -256,9 +272,9 @@ class FindParticlesViaEdges(scaffold.Task):
         return map(Particle.fromContour, contours)
 
     def _refineParticles(self, particles, image):
-        tooSmall = 0.5
-        probablyFragment = 5
-        probablyConjoined = 25
+        tooSmall = self._param(PARTICLE_TOO_SMALL)
+        probablyFragment = self._param(PARTICLE_FRAGMENT)
+        probablyConjoined = self._param(CONJOINED_PARTICLES)
 
         # filter into categories
         refined = [] # no work necessary
@@ -387,10 +403,10 @@ class TracksTable(tb.IsDescription):
     angle    = tb.Float32Col(pos=3)
     axes     = tb.Float32Col(pos=4, shape=2)
     
-TRACK_SEARCH_RADIUS = scaffold.registerParameter("trackSearchRadius", 0.75,
-"""The maximum distance to look for the next particle in a track.""")
-TRACK_MEMORY = scaffold.registerParameter("trackMemory", 0,
-"""The maximum number of frame to 'remember' a particle for tracking.""")
+TRACK_SEARCH_RADIUS = scaffold.registerParameter("trackSearchRadius", 0.75)
+"""The maximum distance to look for the next particle in a track."""
+TRACK_MEMORY = scaffold.registerParameter("trackMemory", 0)
+"""The maximum number of frame to 'remember' a particle for tracking."""
 
 class TrackParticles(scaffold.Task):
     """

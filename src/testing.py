@@ -7,7 +7,7 @@ import visual
 import analysis
 
 def makeContext(**params):
-    f = tables.openFile("test.h5", "a")
+    f = tables.openFile("testNew.h5", "a")
     params["configFile"] = "C:\\Users\\chase_000\\SkyDrive\\Research\\Streaming\\Images\\Updated\\Series064_Properties.xml"
     #params["configFile"] = "C:\\Users\\chase_000\\SkyDrive\\Research\\Streaming\\Images\\High\\Series080_Properties.xml"
     #params["configFile"] = "/home/ckernan/data/streaming/One eighth high density/Series154_Properties.xml"
@@ -18,11 +18,14 @@ def extractId(context):
 
 def doAll(context):
     s = scaffold.Scheduler()
+    s.addTask(images.ComputeForegroundMasks)
+    s.addTask(images.RemoveBackground)
+    #s.addTask(images.Watershed)
     s.addTask(visual.RenderSeedImages)
-    s.addTask(visual.RenderDifferences)
+    #s.addTask(visual.RenderDifferences)
     #s.addTask(visual.RenderForegroundMasks)
     #s.addTask(visual.RenderRemovedBackground)
-    s.addTask(visual.RenderWatershed)
+    #s.addTask(visual.RenderWatershed)
     #s.addTask(visual.RenderRegions)
     s.addTask(analysis.CalculateDensityField)
     s.addTask(analysis.CalculateVelocityField)
@@ -34,7 +37,7 @@ def doAll(context):
     #s.addTask(visual.PlotVelocityField)
     #s.addTask(visual.PlotDensityField)
     s.addTask(visual.PlotParticleDistance)
-    s.run(c)
+    s.run(context, forceRedo=False)
 
 if __name__ == "__main__":
     c = makeContext()

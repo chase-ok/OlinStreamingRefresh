@@ -94,8 +94,8 @@ class TaskInterface(Task):
         super(TaskInterface, self).__init__(context)
         self._impl = implementation
 
-    def isComplete(self): return self._impl.isComplete()
-    def run(self): self._impl.run()
+    def isComplete(self): return True
+    def run(self): pass
 
     def export(self):
         exports = self._impl.export()
@@ -211,6 +211,7 @@ class Context(object):
         kwargs.setdefault('shape', array.shape)
         cArray = self.hdf5.createCArray(self.root, name, *args, **kwargs)
         cArray[:, :] = array
+        cArray.flush()
         return cArray
 
     def createArray(self, name, *args, **kwargs):
@@ -220,6 +221,10 @@ class Context(object):
         """
         self.clearNode(name)
         return self.hdf5.createArray(self.root, name, *args, **kwargs)
+
+    def createEnlargeableArray(self, name, *args, **kwargs):
+        self.clearNode(name)
+        return self.hdf5.createEArray(self.root, name, *args, **kwargs)
 
     def flush(self):
         """Flushes the entire hdf5 connection.
@@ -403,7 +408,7 @@ class Parameter(object):
     global name.
     """
 
-    def __init__(self, name, defaultValue, description):
+    def __init__(self, name, defaultValue):
         """Creates a new parameter (should NOT be called directly).
 
         name and description are strings.
@@ -411,7 +416,6 @@ class Parameter(object):
         """
         self.name = name
         self.defaultValue = defaultValue
-        self.description = description
 
     def __hash__(self):
         return hash(self.name)
@@ -423,23 +427,23 @@ class Parameter(object):
         return self.name
 
     def __repr__(self):
-        return "Parameter({0}, {1}, {2})".format(
-               repr(self.name), repr(self.defaultValue), repr(self.description))
+        return "Parameter({0}, {1})".format(
+               repr(self.name), repr(self.defaultValue))
 
 # global container holding parameter instances (indexed by name)
 _registeredParams = dict()
 
-def registerParameter(name, defaultValue=None, description=""):
-    """Registers a param with the given name, defaultValue, and description.
+def registerParameter(name, defaultValue=None):
+    """Registers a param with the given name and defaultValue.
 
     Returns a Parameter instance that can be used to access its value from an
     Hdf5Data instance.
     """
     if name in _registeredParams:
-        raise ValueError("Parameter {0} is registered twice. Perhaps there " +
-                         "are two different usages?".format(name))
+        raise ValueError(("Parameter {0} is registered twice. Perhaps there " +
+                          "are two different usages?").format(name))
 
-    param = Parameter(name, defaultValue, description)
+    param = Parameter(name, defaultValue)
     _registeredParams[name] = param
     return param
 
